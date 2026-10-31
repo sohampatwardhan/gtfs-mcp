@@ -11,14 +11,14 @@ use zip::ZipWriter;
 
 use crate::gtfs_rt::alert::{Cause, Effect, SeverityLevel};
 use crate::gtfs_rt::feed_header::Incrementality;
+use crate::gtfs_rt::translated_string::Translation;
 use crate::gtfs_rt::trip_update::stop_time_update::ScheduleRelationship;
+use crate::gtfs_rt::trip_update::{StopTimeEvent, StopTimeUpdate};
 use crate::gtfs_rt::vehicle_position::VehicleStopStatus;
 use crate::gtfs_rt::{
     EntitySelector, FeedEntity, FeedHeader, FeedMessage, Position, TimeRange, TranslatedString,
     TripDescriptor, TripUpdate, VehicleDescriptor, VehiclePosition,
 };
-use crate::gtfs_rt::translated_string::Translation;
-use crate::gtfs_rt::trip_update::{StopTimeEvent, StopTimeUpdate};
 
 /// 2026-01-15 16:30:00 UTC, which is 11:30 in America/New_York.
 pub fn reference_unix() -> i64 {
@@ -30,7 +30,6 @@ pub fn reference_unix() -> i64 {
 #[derive(Debug)]
 pub struct HarborPaths {
     pub dir: PathBuf,
-    pub feed_set: PathBuf,
     pub static_zip: PathBuf,
     pub trip_updates: PathBuf,
     pub vehicle_positions: PathBuf,
@@ -49,28 +48,8 @@ pub fn materialize(dir: &Path) -> std::io::Result<HarborPaths> {
     fs::write(&trip_updates, trip_updates_bytes(at))?;
     fs::write(&vehicle_positions, vehicle_bytes(at))?;
     fs::write(&alerts, alerts_bytes(at))?;
-    let feed_set = dir.join("feed-set.json");
-    let manifest = serde_json::json!({
-        "generation_id": "gen-1",
-        "generated_at_unix": at,
-        "static_version": "harbor-1",
-        "source": "fixture",
-        "entity_counts": {
-            "trip_updates": 1,
-            "vehicle_positions": 1,
-            "alerts": 2
-        },
-        "urls": {
-            "static_zip": "static.zip",
-            "trip_updates": "trip-updates.pb",
-            "vehicle_positions": "vehicle-positions.pb",
-            "alerts": "alerts.pb"
-        }
-    });
-    fs::write(&feed_set, serde_json::to_vec_pretty(&manifest).unwrap())?;
     Ok(HarborPaths {
         dir: dir.to_path_buf(),
-        feed_set,
         static_zip,
         trip_updates,
         vehicle_positions,
@@ -84,14 +63,38 @@ fn write_static_zip(path: &Path) -> std::io::Result<()> {
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     for (name, body) in [
-        ("agency.txt", include_str!("../tests/fixtures/harbor/agency.txt")),
-        ("stops.txt", include_str!("../tests/fixtures/harbor/stops.txt")),
-        ("routes.txt", include_str!("../tests/fixtures/harbor/routes.txt")),
-        ("trips.txt", include_str!("../tests/fixtures/harbor/trips.txt")),
-        ("stop_times.txt", include_str!("../tests/fixtures/harbor/stop_times.txt")),
-        ("calendar.txt", include_str!("../tests/fixtures/harbor/calendar.txt")),
-        ("calendar_dates.txt", include_str!("../tests/fixtures/harbor/calendar_dates.txt")),
-        ("feed_info.txt", include_str!("../tests/fixtures/harbor/feed_info.txt")),
+        (
+            "agency.txt",
+            include_str!("../tests/fixtures/harbor/agency.txt"),
+        ),
+        (
+            "stops.txt",
+            include_str!("../tests/fixtures/harbor/stops.txt"),
+        ),
+        (
+            "routes.txt",
+            include_str!("../tests/fixtures/harbor/routes.txt"),
+        ),
+        (
+            "trips.txt",
+            include_str!("../tests/fixtures/harbor/trips.txt"),
+        ),
+        (
+            "stop_times.txt",
+            include_str!("../tests/fixtures/harbor/stop_times.txt"),
+        ),
+        (
+            "calendar.txt",
+            include_str!("../tests/fixtures/harbor/calendar.txt"),
+        ),
+        (
+            "calendar_dates.txt",
+            include_str!("../tests/fixtures/harbor/calendar_dates.txt"),
+        ),
+        (
+            "feed_info.txt",
+            include_str!("../tests/fixtures/harbor/feed_info.txt"),
+        ),
     ] {
         zip.start_file(name, opts)?;
         zip.write_all(body.as_bytes())?;
@@ -146,10 +149,12 @@ fn trip_updates_bytes(at: i64) -> Vec<u8> {
                     ..Default::default()
                 }),
                 schedule_relationship: Some(ScheduleRelationship::Scheduled as i32),
-                stop_time_properties: Some(crate::gtfs_rt::trip_update::stop_time_update::StopTimeProperties {
-                    assigned_stop_id: Some("NHV:track:12".into()),
-                    ..Default::default()
-                }),
+                stop_time_properties: Some(
+                    crate::gtfs_rt::trip_update::stop_time_update::StopTimeProperties {
+                        assigned_stop_id: Some("NHV:track:12".into()),
+                        ..Default::default()
+                    },
+                ),
                 ..Default::default()
             },
         ],
@@ -212,7 +217,7 @@ fn alerts_bytes(at: i64) -> Vec<u8> {
     let nec = FeedEntity {
         id: "alert-nec".into(),
         alert: Some(crate::gtfs_rt::Alert {
-            active_period: vec![window.clone()],
+            active_period: vec![window],
             informed_entity: vec![
                 EntitySelector {
                     route_id: Some("NEC".into()),
@@ -276,13 +281,34 @@ pub fn static_zip_bytes() -> Vec<u8> {
         let mut zip = ZipWriter::new(&mut cursor);
         let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         for (name, body) in [
-            ("agency.txt", include_str!("../tests/fixtures/harbor/agency.txt")),
-            ("stops.txt", include_str!("../tests/fixtures/harbor/stops.txt")),
-            ("routes.txt", include_str!("../tests/fixtures/harbor/routes.txt")),
-            ("trips.txt", include_str!("../tests/fixtures/harbor/trips.txt")),
-            ("stop_times.txt", include_str!("../tests/fixtures/harbor/stop_times.txt")),
-            ("calendar.txt", include_str!("../tests/fixtures/harbor/calendar.txt")),
-            ("feed_info.txt", include_str!("../tests/fixtures/harbor/feed_info.txt")),
+            (
+                "agency.txt",
+                include_str!("../tests/fixtures/harbor/agency.txt"),
+            ),
+            (
+                "stops.txt",
+                include_str!("../tests/fixtures/harbor/stops.txt"),
+            ),
+            (
+                "routes.txt",
+                include_str!("../tests/fixtures/harbor/routes.txt"),
+            ),
+            (
+                "trips.txt",
+                include_str!("../tests/fixtures/harbor/trips.txt"),
+            ),
+            (
+                "stop_times.txt",
+                include_str!("../tests/fixtures/harbor/stop_times.txt"),
+            ),
+            (
+                "calendar.txt",
+                include_str!("../tests/fixtures/harbor/calendar.txt"),
+            ),
+            (
+                "feed_info.txt",
+                include_str!("../tests/fixtures/harbor/feed_info.txt"),
+            ),
         ] {
             zip.start_file(name, opts).unwrap();
             zip.write_all(body.as_bytes()).unwrap();

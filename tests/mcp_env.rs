@@ -24,6 +24,21 @@ fn child(args: &[&str]) -> tokio::process::Command {
     command
 }
 
+fn harbor_env(command: &mut tokio::process::Command, paths: &gtfs_rt_mcp::fixtures::HarborPaths) {
+    command
+        .env("GTFS_RT_MCP_FEED_ID", "harbor")
+        .env("GTFS_RT_MCP_STATIC", paths.static_zip.display().to_string())
+        .env(
+            "GTFS_RT_MCP_TRIP_UPDATES",
+            paths.trip_updates.display().to_string(),
+        )
+        .env(
+            "GTFS_RT_MCP_VEHICLE_POSITIONS",
+            paths.vehicle_positions.display().to_string(),
+        )
+        .env("GTFS_RT_MCP_ALERTS", paths.alerts.display().to_string());
+}
+
 #[tokio::test]
 async fn env_registers_a_feed_without_register_feed() {
     let dir = std::env::temp_dir().join(format!(
@@ -37,9 +52,8 @@ async fn env_registers_a_feed_without_register_feed() {
     let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
     let secret = "env-only-header-value";
     let mut command = child(&["stdio"]);
+    harbor_env(&mut command, &paths);
     command
-        .env("GTFS_RT_MCP_FEED_ID", "harbor")
-        .env("GTFS_RT_MCP_FEED_SET", paths.feed_set.display().to_string())
         .env("GTFS_RT_MCP_RT_TTL", "30")
         .env("GTFS_RT_MCP_STATIC_TTL", "0")
         .env(
@@ -60,6 +74,7 @@ async fn env_registers_a_feed_without_register_feed() {
     let rendered = listed.to_string();
     assert_eq!(listed["feeds"][0]["feed_id"], "harbor");
     assert_eq!(listed["feeds"][0]["ready"], true);
+    assert_eq!(listed["feeds"][0]["source"]["kind"], "direct");
     assert_eq!(listed["feeds"][0]["headers"][0], "x-demo");
     assert_eq!(listed["feeds"][0]["realtime"]["ttl_sec"], 30);
     assert!(!rendered.contains(secret), "{rendered}");
@@ -89,9 +104,41 @@ async fn env_registers_a_feed_without_register_feed() {
 }
 
 #[tokio::test]
-async fn bad_env_stays_up_reports_errors_and_register_feed_still_works() {
+async fn missing_static_exits_nonzero() {
+    let mut command = child(&["stdio"]);
+    let output = command.output().await.expect("spawn");
+    assert!(!output.status.success(), "status {:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GTFS_RT_MCP_STATIC"), "{stderr}");
+    assert!(stderr.contains("https://example.com/gtfs.zip"), "{stderr}");
+}
+
+#[tokio::test]
+async fn malformed_optional_values_exit_without_leaking_headers() {
+    let secret = "header-secret-value";
+    let mut command = child(&["stdio"]);
+    command
+        .env("GTFS_RT_MCP_STATIC", "/tmp/gtfs.zip")
+        .env("GTFS_RT_MCP_RT_TTL", "soon")
+        .env(
+            "GTFS_RT_MCP_HTTP_HEADERS",
+            format!(r#"{{"Authorization":"Bearer {secret}""#),
+        );
+    let output = command.output().await.expect("spawn");
+    assert!(!output.status.success(), "status {:?}", output.status);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GTFS_RT_MCP_RT_TTL"), "{stderr}");
+    assert!(stderr.contains("soon"), "{stderr}");
+    assert!(stderr.contains("GTFS_RT_MCP_HTTP_HEADERS"), "{stderr}");
+    assert!(!stderr.contains(secret), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains(secret), "{stdout}");
+}
+
+#[tokio::test]
+async fn unloadable_static_stays_up_and_register_feed_replaces_it() {
     let dir = std::env::temp_dir().join(format!(
-        "gtfs-rt-mcp-bad-env-{}-{}",
+        "gtfs-rt-mcp-bad-file-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -99,17 +146,10 @@ async fn bad_env_stays_up_reports_errors_and_register_feed_still_works() {
             .as_nanos()
     ));
     let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
-    let secret = "header-secret-value";
     let mut command = child(&["stdio"]);
     command
         .env("GTFS_RT_MCP_FEED_ID", "harbor")
-        .env("GTFS_RT_MCP_FEED_SET", paths.feed_set.display().to_string())
-        .env("GTFS_RT_MCP_RT_TTL", "soon")
-        .env(
-            "GTFS_RT_MCP_HTTP_HEADERS",
-            format!(r#"{{"Authorization":"Bearer {secret}"}}"#),
-        )
-        .env("GTFS_RT_MCP_FEEDS", "{not json");
+        .env("GTFS_RT_MCP_STATIC", "/no/such/gtfs-rt-mcp-static.zip");
     let client =
         ().serve(TokioChildProcess::new(command).expect("spawn"))
             .await
@@ -121,38 +161,18 @@ async fn bad_env_stays_up_reports_errors_and_register_feed_still_works() {
         .expect("list_feeds");
     assert_ne!(listed.is_error, Some(true), "{listed:?}");
     let listed = tool_json(&listed);
-    let rendered = listed.to_string();
-    assert!(rendered.contains("config_errors"), "{rendered}");
-    assert!(rendered.contains("GTFS_RT_MCP_FEEDS"), "{rendered}");
     assert_eq!(listed["feeds"][0]["feed_id"], "harbor");
     assert_eq!(listed["feeds"][0]["ready"], false);
-    assert!(
-        listed["feeds"][0]["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("soon"),
-        "{rendered}"
-    );
-    assert_eq!(listed["feeds"][0]["headers"][0], "Authorization");
-    assert!(!rendered.contains(secret), "{rendered}");
-
-    let health = client
-        .call_tool(CallToolRequestParams::new("feed_health"))
-        .await
-        .expect("feed_health");
-    assert_ne!(health.is_error, Some(true), "{health:?}");
-    let health = tool_json(&health);
-    let health_text = health.to_string();
-    assert_eq!(health["ready"], false);
-    assert!(health_text.contains("config_errors"), "{health_text}");
-    assert!(!health_text.contains(secret), "{health_text}");
 
     let registered = client
         .call_tool(
             CallToolRequestParams::new("register_feed").with_arguments(
                 json!({
                     "feed_id": "harbor",
-                    "feed_set": paths.feed_set.display().to_string(),
+                    "static_path": paths.static_zip.display().to_string(),
+                    "trip_updates_path": paths.trip_updates.display().to_string(),
+                    "vehicle_positions_path": paths.vehicle_positions.display().to_string(),
+                    "alerts_path": paths.alerts.display().to_string(),
                     "rt_ttl_secs": 15
                 })
                 .as_object()
@@ -165,7 +185,7 @@ async fn bad_env_stays_up_reports_errors_and_register_feed_still_works() {
     assert_ne!(registered.is_error, Some(true), "{registered:?}");
     let registered = tool_json(&registered);
     assert_eq!(registered["ready"], true);
-    assert!(!registered.to_string().contains(secret));
+    assert_eq!(registered["source"]["kind"], "direct");
 
     let status = client
         .call_tool(

@@ -19,18 +19,18 @@ async fn http_lists_tools_and_answers_departure_board() {
     let catalog = Arc::new(gtfs_rt_mcp::Catalog::new().unwrap());
     catalog
         .register(gtfs_rt_mcp::RegisterRequest {
-            feed_set: Some(paths.feed_set.display().to_string()),
+            static_path: Some(paths.static_zip.display().to_string()),
+            trip_updates_path: Some(paths.trip_updates.display().to_string()),
+            vehicle_positions_path: Some(paths.vehicle_positions.display().to_string()),
+            alerts_path: Some(paths.alerts.display().to_string()),
             ..Default::default()
         })
         .await
         .unwrap();
-    let (addr, handle) = gtfs_rt_mcp::spawn_http(
-        catalog,
-        "127.0.0.1:0".parse().unwrap(),
-        Vec::new(),
-    )
-    .await
-    .unwrap();
+    let (addr, handle) =
+        gtfs_rt_mcp::spawn_http(catalog, "127.0.0.1:0".parse().unwrap(), Vec::new())
+            .await
+            .unwrap();
 
     let health = reqwest::Client::new()
         .get(format!("http://{addr}/healthz"))
@@ -65,7 +65,11 @@ async fn http_lists_tools_and_answers_departure_board() {
         .await
         .expect("board");
     assert_ne!(result.is_error, Some(true), "{result:?}");
-    let text = result.content.first().and_then(|block| block.as_text()).unwrap();
+    let text = result
+        .content
+        .first()
+        .and_then(|block| block.as_text())
+        .unwrap();
     let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
     let names: Vec<_> = value["departures"]
         .as_array()

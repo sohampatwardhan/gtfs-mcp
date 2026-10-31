@@ -180,18 +180,14 @@ impl StaticDb {
         if conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM stops", [], |r| r.get(0))? == 0 {
             return Err(err("GTFS archive has no stops").hint("expected stops.txt inside the zip"));
         }
-        if conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM stop_times", [], |r| r.get(0))? == 0
-        {
+        if conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM stop_times", [], |r| r.get(0))? == 0 {
             return Err(
                 err("GTFS archive has no stop_times").hint("departure boards need stop_times.txt")
             );
         }
 
         let agency = choose_agency(&conn, &agencies)?;
-        let tz_name = agency
-            .timezone
-            .clone()
-            .unwrap_or_else(|| "UTC".to_string());
+        let tz_name = agency.timezone.clone().unwrap_or_else(|| "UTC".to_string());
         let tz = tz_name.parse::<Tz>().unwrap_or(chrono_tz::UTC);
         let counts = Counts {
             agencies: agencies.len() as i64,
@@ -201,7 +197,8 @@ impl StaticDb {
             stop_times: count(&conn, "stop_times")?,
             calendar: calendar.len() as i64,
             calendar_dates: (added.values().map(|s| s.len()).sum::<usize>()
-                + removed.values().map(|s| s.len()).sum::<usize>()) as i64,
+                + removed.values().map(|s| s.len()).sum::<usize>())
+                as i64,
         };
         let _ = conn.execute(
             "INSERT INTO meta (key, value) VALUES ('timezone', ?1)",
@@ -328,15 +325,10 @@ impl StaticDb {
         bound.push(fold);
         let rows = stmt
             .query_map(
-                params_from_iter(
-                    bound
-                        .iter()
-                        .map(|s| s as &dyn rusqlite::ToSql)
-                        .chain([
-                            &(limit as i64) as &dyn rusqlite::ToSql,
-                            &(offset as i64) as &dyn rusqlite::ToSql,
-                        ]),
-                ),
+                params_from_iter(bound.iter().map(|s| s as &dyn rusqlite::ToSql).chain([
+                    &(limit as i64) as &dyn rusqlite::ToSql,
+                    &(offset as i64) as &dyn rusqlite::ToSql,
+                ])),
                 map_stop,
             )?
             .collect::<Result<Vec<_>, _>>()?;
@@ -378,15 +370,10 @@ impl StaticDb {
         bound.push(fold);
         let rows = stmt
             .query_map(
-                params_from_iter(
-                    bound
-                        .iter()
-                        .map(|s| s as &dyn rusqlite::ToSql)
-                        .chain([
-                            &(limit as i64) as &dyn rusqlite::ToSql,
-                            &(offset as i64) as &dyn rusqlite::ToSql,
-                        ]),
-                ),
+                params_from_iter(bound.iter().map(|s| s as &dyn rusqlite::ToSql).chain([
+                    &(limit as i64) as &dyn rusqlite::ToSql,
+                    &(offset as i64) as &dyn rusqlite::ToSql,
+                ])),
                 |r| {
                     Ok(RouteRow {
                         route_id: r.get(0)?,
@@ -514,7 +501,9 @@ impl StaticDb {
             bound.push(id);
         }
         let extras = stmt
-            .query_map(params_from_iter(bound.iter().copied()), |r| r.get::<_, String>(0))?
+            .query_map(params_from_iter(bound.iter().copied()), |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         for id in extras {
             ids.insert(id);
@@ -609,8 +598,9 @@ impl StaticDb {
 
 fn choose_stop(db: &StaticDb, rows: Vec<StopRow>, query: &str) -> Result<StopRow, AppError> {
     if rows.is_empty() {
-        return Err(err(format!("no stop matches '{query}'"))
-            .hint("call search_stops to see identifiers"));
+        return Err(
+            err(format!("no stop matches '{query}'")).hint("call search_stops to see identifiers")
+        );
     }
     if rows.len() == 1 {
         return Ok(rows.into_iter().next().unwrap());
@@ -618,7 +608,11 @@ fn choose_stop(db: &StaticDb, rows: Vec<StopRow>, query: &str) -> Result<StopRow
     let fold = query.to_lowercase();
     let code_exact: Vec<_> = rows
         .iter()
-        .filter(|s| s.stop_code.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(query)))
+        .filter(|s| {
+            s.stop_code
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(query))
+        })
         .cloned()
         .collect();
     let pool = if code_exact.is_empty() {
@@ -675,9 +669,11 @@ fn choose_stop(db: &StaticDb, rows: Vec<StopRow>, query: &str) -> Result<StopRow
             })
         })
         .collect();
-    Err(err(format!("stop '{query}' matches {} places", narrowed.len()))
-        .hint("pass an exact stop_id")
-        .extra("candidates", serde_json::Value::Array(shown)))
+    Err(
+        err(format!("stop '{query}' matches {} places", narrowed.len()))
+            .hint("pass an exact stop_id")
+            .extra("candidates", serde_json::Value::Array(shown)),
+    )
 }
 
 fn map_stop(r: &rusqlite::Row<'_>) -> rusqlite::Result<StopRow> {
@@ -742,21 +738,11 @@ fn like_contains(fold: &str) -> String {
     format!("%{escaped}%")
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Agency {
     id: Option<String>,
     name: Option<String>,
     timezone: Option<String>,
-}
-
-impl Default for Agency {
-    fn default() -> Self {
-        Self {
-            id: None,
-            name: None,
-            timezone: None,
-        }
-    }
 }
 
 struct FeedInfo {
@@ -802,7 +788,10 @@ fn choose_agency(conn: &Connection, agencies: &[Agency]) -> Result<Agency, AppEr
         )
         .optional()?;
     if let Some(id) = dominant {
-        if let Some(agency) = agencies.iter().find(|agency| agency.id.as_deref() == Some(id.as_str())) {
+        if let Some(agency) = agencies
+            .iter()
+            .find(|agency| agency.id.as_deref() == Some(id.as_str()))
+        {
             return Ok(agency.clone());
         }
     }
@@ -995,16 +984,13 @@ fn load_stop_times(conn: &Connection, bytes: Option<&Vec<u8>>) -> Result<(), App
     Ok(())
 }
 
-fn load_services(
-    files: &HashMap<String, Vec<u8>>,
-) -> Result<
-    (
-        HashMap<String, CalendarRow>,
-        HashMap<String, HashSet<String>>,
-        HashMap<String, HashSet<String>>,
-    ),
-    AppError,
-> {
+type ServiceMaps = (
+    HashMap<String, CalendarRow>,
+    HashMap<String, HashSet<String>>,
+    HashMap<String, HashSet<String>>,
+);
+
+fn load_services(files: &HashMap<String, Vec<u8>>) -> Result<ServiceMaps, AppError> {
     let mut calendar = HashMap::new();
     if let Some(bytes) = files.get("calendar.txt") {
         let mut reader = csv_reader(bytes);
@@ -1126,7 +1112,12 @@ fn header_index(headers: &csv::StringRecord) -> HashMap<String, usize> {
     headers
         .iter()
         .enumerate()
-        .map(|(i, h)| (h.trim().trim_start_matches('\u{feff}').to_ascii_lowercase(), i))
+        .map(|(i, h)| {
+            (
+                h.trim().trim_start_matches('\u{feff}').to_ascii_lowercase(),
+                i,
+            )
+        })
         .collect()
 }
 

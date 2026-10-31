@@ -144,18 +144,12 @@ pub fn trip_status(
                 ("headsign", json_opt(trip.headsign.clone())),
                 ("route_short_name", json_opt(trip.route_short_name.clone())),
                 ("service_date", json!(date.format("%Y%m%d").to_string())),
-                (
-                    "live",
-                    json!(vehicles.contains_key(trip.trip_id.as_str())),
-                ),
+                ("live", json!(vehicles.contains_key(trip.trip_id.as_str()))),
             ])
         })
         .collect();
     Ok(obj([
-        (
-            "matched",
-            json!(ranked.len()),
-        ),
+        ("matched", json!(ranked.len())),
         ("trips", Value::Array(full)),
         (
             "alternatives",
@@ -282,15 +276,9 @@ pub fn departure_board(
                 continue;
             }
             let update = updates.get(row.trip_id.as_str()).copied();
-            let rendered = stop_json(
-                db,
-                &update.cloned(),
-                trip_rel_of(update),
-                row,
-                date,
-                db.tz,
-            );
-            if !query.include_skipped && rendered.get("skipped").and_then(|v| v.as_bool()) == Some(true)
+            let rendered = stop_json(db, &update.cloned(), trip_rel_of(update), row, date, db.tz);
+            if !query.include_skipped
+                && rendered.get("skipped").and_then(|v| v.as_bool()) == Some(true)
             {
                 continue;
             }
@@ -298,8 +286,14 @@ pub fn departure_board(
         }
     }
     departures.sort_by(|a, b| {
-        let ae = a.1.get("estimated_departure").and_then(|v| v.as_i64()).unwrap_or(a.0);
-        let be = b.1.get("estimated_departure").and_then(|v| v.as_i64()).unwrap_or(b.0);
+        let ae =
+            a.1.get("estimated_departure")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(a.0);
+        let be =
+            b.1.get("estimated_departure")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(b.0);
         ae.cmp(&be).then(a.0.cmp(&b.0))
     });
     let total = departures.len();
@@ -344,7 +338,9 @@ pub fn vehicle_positions(
     let trip_filter = trip_filter(db, query.trip.as_deref())?;
     let route_ids = route_filter(db, query.route.as_deref())?;
     let stop_ids: Option<HashSet<String>> = match &query.stop {
-        Some(stop) => Some(HashSet::from_iter(db.expand_stop_ids(&db.resolve_stop(stop)?.stop_id)?)),
+        Some(stop) => Some(HashSet::from_iter(
+            db.expand_stop_ids(&db.resolve_stop(stop)?.stop_id)?,
+        )),
         None => None,
     };
     let mut matched: Vec<&FeedEntity> = feed
@@ -418,13 +414,7 @@ pub fn vehicle_positions(
         .iter()
         .map(|entity| vehicle_row(db, entity, &stops))
         .collect();
-    Ok(page_object(
-        feed,
-        "vehicles",
-        rows,
-        total,
-        offset,
-    ))
+    Ok(page_object(feed, "vehicles", rows, total, offset))
 }
 
 pub fn trip_updates(
@@ -514,7 +504,9 @@ pub fn alerts(db: &StaticDb, rt: RtView<'_>, query: &AlertQuery) -> Result<Value
             if query.active_only {
                 let periods = alert_periods(alert);
                 if !periods.is_empty()
-                    && !periods.iter().any(|range| period_contains(range, query.at_unix))
+                    && !periods
+                        .iter()
+                        .any(|range| period_contains(range, query.at_unix))
                 {
                     return false;
                 }
@@ -561,7 +553,12 @@ pub fn alerts(db: &StaticDb, rt: RtView<'_>, query: &AlertQuery) -> Result<Value
     Ok(page_object(feed, "alerts", rows, total, offset))
 }
 
-pub fn decode_message(message: &FeedMessage, offset: usize, limit: usize, max_chars: usize) -> Value {
+pub fn decode_message(
+    message: &FeedMessage,
+    offset: usize,
+    limit: usize,
+    max_chars: usize,
+) -> Value {
     let total = message.entity.len();
     let offset = offset.min(total);
     let end = (offset + limit).min(total);
@@ -581,8 +578,14 @@ pub fn decode_message(message: &FeedMessage, offset: usize, limit: usize, max_ch
                     "incrementality",
                     json_opt(incrementality(message.header.incrementality)),
                 ),
-                ("timestamp", json_i64(message.header.timestamp.map(|v| v as i64))),
-                ("feed_version", json_opt(message.header.feed_version.clone())),
+                (
+                    "timestamp",
+                    json_i64(message.header.timestamp.map(|v| v as i64)),
+                ),
+                (
+                    "feed_version",
+                    json_opt(message.header.feed_version.clone()),
+                ),
             ]),
         ),
         ("entity_count", json!(total)),
@@ -590,16 +593,13 @@ pub fn decode_message(message: &FeedMessage, offset: usize, limit: usize, max_ch
         ("returned", json!(entities.len())),
         (
             "next_offset",
-            if end < total {
-                json!(end)
-            } else {
-                Value::Null
-            },
+            if end < total { json!(end) } else { Value::Null },
         ),
         ("entities", Value::Array(entities)),
     ])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_trip(
     db: &StaticDb,
     query: &TripStatusQuery,
@@ -613,7 +613,8 @@ fn render_trip(
     let canceled = update
         .map(|update| is_canceled(update.trip.schedule_relationship))
         .unwrap_or(false);
-    let relationship = update.and_then(|update| trip_relationship(update.trip.schedule_relationship));
+    let relationship =
+        update.and_then(|update| trip_relationship(update.trip.schedule_relationship));
     let owned = update.cloned();
     let rendered: Vec<Value> = stops
         .iter()
@@ -623,7 +624,9 @@ fn render_trip(
         .and_then(|vehicle| vehicle.current_stop_sequence)
         .map(|seq| seq as i64);
     let upcoming_start = if let Some(seq) = cursor {
-        rendered.iter().position(|row| row.get("stop_sequence").and_then(|v| v.as_i64()) == Some(seq))
+        rendered
+            .iter()
+            .position(|row| row.get("stop_sequence").and_then(|v| v.as_i64()) == Some(seq))
     } else {
         rendered.iter().position(|row| {
             let when = row
@@ -635,7 +638,12 @@ fn render_trip(
         })
     };
     let upcoming = if let Some(start) = upcoming_start {
-        rendered.iter().skip(start).take(query.upcoming_limit).cloned().collect::<Vec<_>>()
+        rendered
+            .iter()
+            .skip(start)
+            .take(query.upcoming_limit)
+            .cloned()
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -687,7 +695,9 @@ fn render_trip(
         ("delay_sec", json_i32(delay_sec)),
         (
             "delay_label",
-            delay_sec.map(|sec| json!(delay_label(sec))).unwrap_or(Value::Null),
+            delay_sec
+                .map(|sec| json!(delay_label(sec)))
+                .unwrap_or(Value::Null),
         ),
         ("vehicle", vehicle_out),
         ("next_stop", next_stop.unwrap_or(Value::Null)),
@@ -729,9 +739,7 @@ fn stop_json(
         }
     }
     let relationship = exact.and_then(|row| stop_relationship(row.schedule_relationship));
-    let skipped = exact
-        .and_then(|row| row.schedule_relationship)
-        == Some(StopRel::Skipped as i32);
+    let skipped = exact.and_then(|row| row.schedule_relationship) == Some(StopRel::Skipped as i32);
     let assigned = exact.and_then(|row| {
         row.stop_time_properties
             .as_ref()
@@ -751,7 +759,10 @@ fn stop_json(
         ("stop_name", json_opt(row.stop_name.clone())),
         ("trip_id", json!(row.trip_id)),
         ("trip_short_name", json_opt(row.trip_short_name.clone())),
-        ("headsign", json_opt(row.headsign.clone().or(row.trip_headsign.clone()))),
+        (
+            "headsign",
+            json_opt(row.headsign.clone().or(row.trip_headsign.clone())),
+        ),
         ("route_id", json!(row.route_id)),
         ("route_short_name", json_opt(row.route_short_name.clone())),
         ("route_long_name", json_opt(row.route_long_name.clone())),
@@ -759,7 +770,9 @@ fn stop_json(
         ("scheduled_arrival", json_i64(sched_arr)),
         (
             "scheduled_arrival_local",
-            sched_arr.map(|unix| json!(hhmm(unix, tz))).unwrap_or(Value::Null),
+            sched_arr
+                .map(|unix| json!(hhmm(unix, tz)))
+                .unwrap_or(Value::Null),
         ),
         ("estimated_arrival", json_i64(arrival.estimated)),
         (
@@ -773,7 +786,9 @@ fn stop_json(
         ("scheduled_departure", json_i64(sched_dep)),
         (
             "scheduled_departure_local",
-            sched_dep.map(|unix| json!(hhmm(unix, tz))).unwrap_or(Value::Null),
+            sched_dep
+                .map(|unix| json!(hhmm(unix, tz)))
+                .unwrap_or(Value::Null),
         ),
         ("estimated_departure", json_i64(departure.estimated)),
         (
@@ -787,9 +802,14 @@ fn stop_json(
         ("delay_sec", json_i32(delay)),
         (
             "delay_label",
-            delay.map(|sec| json!(delay_label(sec))).unwrap_or(Value::Null),
+            delay
+                .map(|sec| json!(delay_label(sec)))
+                .unwrap_or(Value::Null),
         ),
-        ("schedule_relationship", json_opt(relationship.or(trip_relationship_name))),
+        (
+            "schedule_relationship",
+            json_opt(relationship.or(trip_relationship_name)),
+        ),
         ("skipped", if skipped { json!(true) } else { Value::Null }),
         ("canceled", if canceled { json!(true) } else { Value::Null }),
         ("assigned_stop_id", json_opt(assigned)),
@@ -814,10 +834,12 @@ fn vehicle_position_json(
     vehicle: &VehiclePosition,
     stops: &HashMap<String, StopRow>,
 ) -> Value {
-    let stop = vehicle
-        .stop_id
-        .as_ref()
-        .and_then(|id| stops.get(id).cloned().or_else(|| db.stop_by_id(id).ok().flatten()));
+    let stop = vehicle.stop_id.as_ref().and_then(|id| {
+        stops
+            .get(id)
+            .cloned()
+            .or_else(|| db.stop_by_id(id).ok().flatten())
+    });
     let trip_id = vehicle.trip.as_ref().and_then(|t| t.trip_id.clone());
     let static_trip = trip_id
         .as_deref()
@@ -844,7 +866,11 @@ fn vehicle_position_json(
         ),
         (
             "route_short_name",
-            json_opt(static_trip.as_ref().and_then(|t| t.route_short_name.clone())),
+            json_opt(
+                static_trip
+                    .as_ref()
+                    .and_then(|t| t.route_short_name.clone()),
+            ),
         ),
         ("vehicle", vehicle_json(vehicle.vehicle.as_ref())),
         (
@@ -888,15 +914,24 @@ fn vehicle_position_json(
                 vehicle.current_stop_sequence.is_some(),
             )),
         ),
-        ("stop_sequence", json_i64(vehicle.current_stop_sequence.map(|v| v as i64))),
+        (
+            "stop_sequence",
+            json_i64(vehicle.current_stop_sequence.map(|v| v as i64)),
+        ),
         ("stop_id", json_opt(vehicle.stop_id.clone())),
-        ("stop_name", json_opt(stop.as_ref().and_then(|s| s.stop_name.clone()))),
+        (
+            "stop_name",
+            json_opt(stop.as_ref().and_then(|s| s.stop_name.clone())),
+        ),
         (
             "platform_code",
             json_opt(stop.as_ref().and_then(|s| s.platform_code.clone())),
         ),
         ("timestamp", json_i64(vehicle.timestamp.map(|v| v as i64))),
-        ("occupancy", json_opt(occupancy_name(vehicle.occupancy_status))),
+        (
+            "occupancy",
+            json_opt(occupancy_name(vehicle.occupancy_status)),
+        ),
         (
             "occupancy_percentage",
             json_i64(vehicle.occupancy_percentage.map(|v| v as i64)),
@@ -930,16 +965,28 @@ fn trip_update_row(db: &StaticDb, entity: &FeedEntity, stop_limit: usize) -> Val
                 .and_then(|id| db.stop_by_id(id).ok().flatten())
                 .and_then(|stop| stop.stop_name);
             obj([
-                ("stop_sequence", json_i64(row.stop_sequence.map(|v| v as i64))),
+                (
+                    "stop_sequence",
+                    json_i64(row.stop_sequence.map(|v| v as i64)),
+                ),
                 ("stop_id", json_opt(row.stop_id.clone())),
                 ("stop_name", json_opt(stop_name)),
-                ("arrival_delay_sec", json_i32(row.arrival.as_ref().and_then(|e| e.delay))),
-                ("arrival_time", json_i64(row.arrival.as_ref().and_then(|e| e.time))),
+                (
+                    "arrival_delay_sec",
+                    json_i32(row.arrival.as_ref().and_then(|e| e.delay)),
+                ),
+                (
+                    "arrival_time",
+                    json_i64(row.arrival.as_ref().and_then(|e| e.time)),
+                ),
                 (
                     "departure_delay_sec",
                     json_i32(row.departure.as_ref().and_then(|e| e.delay)),
                 ),
-                ("departure_time", json_i64(row.departure.as_ref().and_then(|e| e.time))),
+                (
+                    "departure_time",
+                    json_i64(row.departure.as_ref().and_then(|e| e.time)),
+                ),
                 (
                     "schedule_relationship",
                     json_opt(stop_relationship(row.schedule_relationship)),
@@ -957,7 +1004,10 @@ fn trip_update_row(db: &StaticDb, entity: &FeedEntity, stop_limit: usize) -> Val
             "trip_short_name",
             json_opt(static_trip.as_ref().and_then(|t| t.short_name.clone())),
         ),
-        ("headsign", json_opt(static_trip.as_ref().and_then(|t| t.headsign.clone()))),
+        (
+            "headsign",
+            json_opt(static_trip.as_ref().and_then(|t| t.headsign.clone())),
+        ),
         (
             "route_id",
             json_opt(
@@ -970,7 +1020,11 @@ fn trip_update_row(db: &StaticDb, entity: &FeedEntity, stop_limit: usize) -> Val
         ),
         (
             "route_short_name",
-            json_opt(static_trip.as_ref().and_then(|t| t.route_short_name.clone())),
+            json_opt(
+                static_trip
+                    .as_ref()
+                    .and_then(|t| t.route_short_name.clone()),
+            ),
         ),
         (
             "schedule_relationship",
@@ -1021,13 +1075,19 @@ fn alert_row(db: &StaticDb, entity: &FeedEntity, max_chars: usize) -> Value {
                     "route_long_name",
                     json_opt(route.as_ref().and_then(|r| r.long_name.clone())),
                 ),
-                ("route_type", json_i64(selector.route_type.map(|v| v as i64))),
+                (
+                    "route_type",
+                    json_i64(selector.route_type.map(|v| v as i64)),
+                ),
                 ("stop_id", json_opt(selector.stop_id.clone())),
                 (
                     "trip_id",
                     json_opt(selector.trip.as_ref().and_then(|t| t.trip_id.clone())),
                 ),
-                ("direction_id", json_i64(selector.direction_id.map(|v| v as i64))),
+                (
+                    "direction_id",
+                    json_i64(selector.direction_id.map(|v| v as i64)),
+                ),
             ])
         })
         .collect();
@@ -1042,10 +1102,21 @@ fn alert_row(db: &StaticDb, entity: &FeedEntity, max_chars: usize) -> Value {
         .collect();
     obj([
         ("id", json!(entity.id)),
-        ("header", if header.is_empty() { Value::Null } else { json!(header) }),
+        (
+            "header",
+            if header.is_empty() {
+                Value::Null
+            } else {
+                json!(header)
+            },
+        ),
         (
             "header_truncated",
-            if header_truncated { json!(true) } else { Value::Null },
+            if header_truncated {
+                json!(true)
+            } else {
+                Value::Null
+            },
         ),
         (
             "description",
@@ -1063,7 +1134,14 @@ fn alert_row(db: &StaticDb, entity: &FeedEntity, max_chars: usize) -> Value {
                 Value::Null
             },
         ),
-        ("url", if url.is_empty() { Value::Null } else { json!(url) }),
+        (
+            "url",
+            if url.is_empty() {
+                Value::Null
+            } else {
+                json!(url)
+            },
+        ),
         ("cause", json_opt(cause_name(alert.cause))),
         ("effect", json_opt(effect_name(alert.effect))),
         ("severity", json_opt(severity_name(alert.severity_level))),
@@ -1115,10 +1193,19 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
                 .take(40)
                 .map(|row| {
                     obj([
-                        ("stop_sequence", json_i64(row.stop_sequence.map(|v| v as i64))),
+                        (
+                            "stop_sequence",
+                            json_i64(row.stop_sequence.map(|v| v as i64)),
+                        ),
                         ("stop_id", json_opt(row.stop_id.clone())),
-                        ("arrival_delay_sec", json_i32(row.arrival.as_ref().and_then(|e| e.delay))),
-                        ("departure_delay_sec", json_i32(row.departure.as_ref().and_then(|e| e.delay))),
+                        (
+                            "arrival_delay_sec",
+                            json_i32(row.arrival.as_ref().and_then(|e| e.delay)),
+                        ),
+                        (
+                            "departure_delay_sec",
+                            json_i32(row.departure.as_ref().and_then(|e| e.delay)),
+                        ),
                         (
                             "schedule_relationship",
                             json_opt(stop_relationship(row.schedule_relationship)),
@@ -1152,8 +1239,14 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
             object.insert(
                 "vehicle".into(),
                 obj([
-                    ("trip_id", json_opt(vehicle.trip.as_ref().and_then(|t| t.trip_id.clone()))),
-                    ("route_id", json_opt(vehicle.trip.as_ref().and_then(|t| t.route_id.clone()))),
+                    (
+                        "trip_id",
+                        json_opt(vehicle.trip.as_ref().and_then(|t| t.trip_id.clone())),
+                    ),
+                    (
+                        "route_id",
+                        json_opt(vehicle.trip.as_ref().and_then(|t| t.route_id.clone())),
+                    ),
                     ("stop_id", json_opt(vehicle.stop_id.clone())),
                     (
                         "status",
@@ -1162,8 +1255,22 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
                             vehicle.current_stop_sequence.is_some(),
                         )),
                     ),
-                    ("lat", vehicle.position.as_ref().map(|p| json!(round_coord(p.latitude))).unwrap_or(Value::Null)),
-                    ("lon", vehicle.position.as_ref().map(|p| json!(round_coord(p.longitude))).unwrap_or(Value::Null)),
+                    (
+                        "lat",
+                        vehicle
+                            .position
+                            .as_ref()
+                            .map(|p| json!(round_coord(p.latitude)))
+                            .unwrap_or(Value::Null),
+                    ),
+                    (
+                        "lon",
+                        vehicle
+                            .position
+                            .as_ref()
+                            .map(|p| json!(round_coord(p.longitude)))
+                            .unwrap_or(Value::Null),
+                    ),
                     ("timestamp", json_i64(vehicle.timestamp.map(|v| v as i64))),
                     ("vehicle", vehicle_json(vehicle.vehicle.as_ref())),
                 ]),
@@ -1183,8 +1290,18 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
             object.insert(
                 "alert".into(),
                 obj([
-                    ("header", if header.is_empty() { Value::Null } else { json!(header) }),
-                    ("header_truncated", if truncated { json!(true) } else { Value::Null }),
+                    (
+                        "header",
+                        if header.is_empty() {
+                            Value::Null
+                        } else {
+                            json!(header)
+                        },
+                    ),
+                    (
+                        "header_truncated",
+                        if truncated { json!(true) } else { Value::Null },
+                    ),
                     (
                         "description",
                         if description.is_empty() {
@@ -1195,7 +1312,11 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
                     ),
                     (
                         "description_truncated",
-                        if description_truncated { json!(true) } else { Value::Null },
+                        if description_truncated {
+                            json!(true)
+                        } else {
+                            Value::Null
+                        },
                     ),
                     (
                         "cause",
@@ -1225,16 +1346,17 @@ fn page_object(
             "header_timestamp",
             json_i64(feed.header.timestamp.map(|v| v as i64)),
         ),
-        (
-            "feed_version",
-            json_opt(feed.header.feed_version.clone()),
-        ),
+        ("feed_version", json_opt(feed.header.feed_version.clone())),
         ("total", json!(total)),
         ("offset", json!(offset)),
         ("returned", json!(rows.len())),
         (
             "next_offset",
-            if next < total { json!(next) } else { Value::Null },
+            if next < total {
+                json!(next)
+            } else {
+                Value::Null
+            },
         ),
         (key, Value::Array(rows)),
     ])
@@ -1274,11 +1396,7 @@ fn route_filter(db: &StaticDb, query: Option<&str>) -> Result<Option<Vec<String>
     }
 }
 
-fn alert_matches_route(
-    db: &StaticDb,
-    alert: &crate::gtfs_rt::Alert,
-    routes: &[String],
-) -> bool {
+fn alert_matches_route(db: &StaticDb, alert: &crate::gtfs_rt::Alert, routes: &[String]) -> bool {
     alert.informed_entity.iter().any(|selector| {
         if selector
             .route_id
@@ -1307,9 +1425,7 @@ fn update_hits_stop(
     by_trip: &HashMap<String, HashSet<i64>>,
 ) -> bool {
     if update.stop_time_update.iter().any(|row| {
-        row.stop_id
-            .as_ref()
-            .is_some_and(|id| stop_ids.contains(id))
+        row.stop_id.as_ref().is_some_and(|id| stop_ids.contains(id))
             || row
                 .stop_time_properties
                 .as_ref()
@@ -1393,7 +1509,13 @@ fn score_candidate(
             if at >= start - 600 && at <= end + 600 {
                 score += 300;
             }
-            let distance = if at < start { start - at } else if at > end { at - end } else { 0 };
+            let distance = if at < start {
+                start - at
+            } else if at > end {
+                at - end
+            } else {
+                0
+            };
             score -= distance / 60;
         }
     }
@@ -1441,4 +1563,3 @@ fn hhmm(unix: i64, tz: Tz) -> String {
     let dt = at_datetime(unix, tz);
     format!("{:02}:{:02}", dt.hour(), dt.minute())
 }
-

@@ -3,10 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use gtfs_rt_mcp::{
-    serve_http, serve_stdio, startup_plan, Catalog, GtfsServer, StartupFailure, StartupOverrides,
-};
-use serde_json::Value;
+use gtfs_rt_mcp::{serve_http, serve_stdio, startup_plan, Catalog, GtfsServer, StartupOverrides};
 
 #[derive(Parser)]
 #[command(
@@ -15,13 +12,10 @@ use serde_json::Value;
     about = "MCP server for GTFS static schedules and GTFS-Realtime"
 )]
 struct Cli {
-    /// Feed-set JSON URL or path for the unindexed default feed. Overrides GTFS_RT_MCP_FEED_SET.
-    #[arg(long, global = true)]
-    feed_set: Option<String>,
-    /// Id for the unindexed default feed. Overrides GTFS_RT_MCP_FEED_ID.
+    /// Id for the startup feed. Overrides GTFS_RT_MCP_FEED_ID. Default `default`.
     #[arg(long, global = true)]
     feed_id: Option<String>,
-    /// GTFS static zip URL or filesystem path. Overrides GTFS_RT_MCP_STATIC.
+    /// GTFS static zip URL or filesystem path. Required. Overrides GTFS_RT_MCP_STATIC.
     #[arg(long, global = true)]
     r#static: Option<String>,
     /// TripUpdates protobuf URL or path. Overrides GTFS_RT_MCP_TRIP_UPDATES.
@@ -33,13 +27,13 @@ struct Cli {
     /// Alerts protobuf URL or path. Overrides GTFS_RT_MCP_ALERTS.
     #[arg(long, global = true)]
     alerts: Option<String>,
-    /// Realtime TTL in seconds for the default feed. Overrides GTFS_RT_MCP_RT_TTL.
+    /// Realtime TTL in seconds for the startup feed. Overrides GTFS_RT_MCP_RT_TTL.
     #[arg(long, global = true)]
     rt_ttl: Option<u64>,
-    /// Static TTL in seconds for the default feed. 0 disables the timer. Overrides GTFS_RT_MCP_STATIC_TTL.
+    /// Static TTL in seconds for the startup feed. 0 disables the timer. Overrides GTFS_RT_MCP_STATIC_TTL.
     #[arg(long, global = true)]
     static_ttl: Option<u64>,
-    /// JSON object of HTTP headers for the default feed. Overrides GTFS_RT_MCP_HTTP_HEADERS. Values are never logged.
+    /// JSON object of HTTP headers for the startup feed. Overrides GTFS_RT_MCP_HTTP_HEADERS. Values are never logged.
     #[arg(long, global = true)]
     http_headers: Option<String>,
     #[command(subcommand)]
@@ -72,7 +66,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    preload(&catalog, &cli).await;
+    if let Err(error) = preload(&catalog, &cli).await {
+        eprintln!("gtfs-rt-mcp: {}", error.message);
+        std::process::exit(1);
+    }
     let result = match cli.command {
         Command::Stdio => serve_stdio(GtfsServer::new(catalog)).await,
         Command::Http {
@@ -98,12 +95,11 @@ fn init_tracing(http: bool) {
         .try_init();
 }
 
-async fn preload(catalog: &Catalog, cli: &Cli) {
-    let plan = startup_plan(
+async fn preload(catalog: &Catalog, cli: &Cli) -> Result<(), gtfs_rt_mcp::ConfigError> {
+    let request = startup_plan(
         std::env::vars(),
         &StartupOverrides {
             feed_id: cli.feed_id.clone(),
-            feed_set: cli.feed_set.clone(),
             static_gtfs: cli.r#static.clone(),
             trip_updates: cli.trip_updates.clone(),
             vehicle_positions: cli.vehicle_positions.clone(),
@@ -112,72 +108,30 @@ async fn preload(catalog: &Catalog, cli: &Cli) {
             static_ttl_secs: cli.static_ttl,
             http_headers: cli.http_headers.clone(),
         },
+    )?;
+    let id = request
+        .feed_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let header_count = request.headers.len();
+    tracing::info!(
+        feed_id = %id,
+        header_count,
+        "loading feed from startup configuration"
     );
-    catalog.add_config_errors(plan.errors.clone());
-    for error in &plan.errors {
-        eprintln!("gtfs-rt-mcp: {}", format_config_error(error));
-    }
-    for failure in plan.failures {
-        report_failure(&failure);
-        let mut error = gtfs_rt_mcp::AppError::new(failure.redact_error());
-        if let Some(hint) = failure.hint.clone() {
-            error = error.hint(hint);
-        }
-        catalog.note_load_failure(failure.request, &error);
-    }
-    for request in plan.requests {
-        let id = request
-            .feed_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        let header_count = request.headers.len();
-        tracing::info!(
-            feed_id = %id,
-            header_count,
-            "loading feed from startup configuration"
-        );
-        match catalog.register(request.clone()).await {
-            Ok(_) => {}
-            Err(error) => {
-                let redacted = redact(&error.error, &request.headers);
-                eprintln!("gtfs-rt-mcp: feed {id}: {redacted}");
-                let mut reported = gtfs_rt_mcp::AppError::new(redacted);
-                if let Some(hint) = error.hint {
-                    reported = reported.hint(hint);
-                }
-                catalog.note_load_failure(request, &reported);
+    match catalog.register(request.clone()).await {
+        Ok(_) => {}
+        Err(error) => {
+            let redacted = redact(&error.error, &request.headers);
+            eprintln!("gtfs-rt-mcp: feed {id}: {redacted}");
+            let mut reported = gtfs_rt_mcp::AppError::new(redacted);
+            if let Some(hint) = error.hint {
+                reported = reported.hint(hint);
             }
+            catalog.note_load_failure(request, &reported);
         }
     }
-}
-
-fn report_failure(failure: &StartupFailure) {
-    let message = failure.redact_error();
-    match &failure.hint {
-        Some(hint) => eprintln!("gtfs-rt-mcp: {message} ({hint})"),
-        None => eprintln!("gtfs-rt-mcp: {message}"),
-    }
-}
-
-fn format_config_error(value: &Value) -> String {
-    let error = value
-        .get("error")
-        .and_then(Value::as_str)
-        .unwrap_or("invalid feed configuration");
-    let var = value.get("var").and_then(Value::as_str);
-    let feed = value.get("feed_id").and_then(Value::as_str);
-    let hint = value.get("hint").and_then(Value::as_str);
-    let mut text = match (var, feed) {
-        (Some(var), _) => format!("{var}: {error}"),
-        (None, Some(feed)) => format!("feed {feed}: {error}"),
-        (None, None) => error.to_string(),
-    };
-    if let Some(hint) = hint {
-        text.push_str(" (");
-        text.push_str(hint);
-        text.push(')');
-    }
-    text
+    Ok(())
 }
 
 fn redact(text: &str, headers: &BTreeMap<String, String>) -> String {

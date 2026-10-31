@@ -9,7 +9,7 @@ use crate::gtfs_rt::trip_descriptor::ScheduleRelationship as TripRel;
 use crate::gtfs_rt::trip_update::stop_time_update::ScheduleRelationship as StopRel;
 use crate::gtfs_rt::vehicle_position::VehicleStopStatus;
 use crate::gtfs_rt::{
-    FeedMessage, TranslatedString, TripUpdate, VehicleDescriptor, alert, vehicle_position,
+    alert, vehicle_position, FeedMessage, TranslatedString, TripUpdate, VehicleDescriptor,
 };
 
 pub fn maybe_gunzip(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -56,7 +56,10 @@ pub struct Prediction {
     pub delay_sec: Option<i32>,
 }
 
-pub fn predict(scheduled: Option<i64>, event: Option<&crate::gtfs_rt::trip_update::StopTimeEvent>) -> Prediction {
+pub fn predict(
+    scheduled: Option<i64>,
+    event: Option<&crate::gtfs_rt::trip_update::StopTimeEvent>,
+) -> Prediction {
     let Some(event) = event else {
         return Prediction {
             estimated: scheduled,
@@ -164,9 +167,9 @@ pub fn translated(text: Option<&TranslatedString>, max_chars: usize) -> Option<(
         .translation
         .iter()
         .find(|t| {
-            t.language
-                .as_deref()
-                .is_some_and(|lang| lang.eq_ignore_ascii_case("en") || lang.to_ascii_lowercase().starts_with("en-"))
+            t.language.as_deref().is_some_and(|lang| {
+                lang.eq_ignore_ascii_case("en") || lang.to_ascii_lowercase().starts_with("en-")
+            })
         })
         .or_else(|| text.translation.iter().find(|t| t.language.is_none()))
         .or(text.translation.first())?;
@@ -205,7 +208,9 @@ pub fn obj(pairs: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
 }
 
 pub fn json_opt(value: Option<impl Into<String>>) -> Value {
-    value.map(|v| Value::String(v.into())).unwrap_or(Value::Null)
+    value
+        .map(|v| Value::String(v.into()))
+        .unwrap_or(Value::Null)
 }
 
 pub fn json_i64(value: Option<i64>) -> Value {
@@ -248,10 +253,10 @@ pub fn find_stop_update<'a>(
         })
 }
 
-pub fn previous_stop_update<'a>(
-    update: &'a TripUpdate,
+pub fn previous_stop_update(
+    update: &TripUpdate,
     stop_sequence: u32,
-) -> Option<&'a crate::gtfs_rt::trip_update::StopTimeUpdate> {
+) -> Option<&crate::gtfs_rt::trip_update::StopTimeUpdate> {
     update
         .stop_time_update
         .iter()
@@ -291,4 +296,3 @@ pub fn period_contains(range: &crate::gtfs_rt::TimeRange, at: i64) -> bool {
     let ends = range.end.is_none_or(|end| at < end);
     starts && ends
 }
-
