@@ -17,8 +17,7 @@ use crate::query::{
 };
 use crate::realtime::{self, incrementality};
 use crate::source::{
-    self, fetch_bytes, is_not_found, loc_label, manifest_json, parse_feed_set, validate_headers,
-    FeedSpec, Loc, Manifest, MAX_RT_BYTES, MAX_STATIC_BYTES,
+    self, fetch_bytes, loc_label, validate_headers, FeedSpec, Loc, MAX_RT_BYTES, MAX_STATIC_BYTES,
 };
 
 const MAX_FEEDS: usize = 16;
@@ -26,7 +25,6 @@ const MAX_FEEDS: usize = 16;
 #[derive(Debug, Clone, Default)]
 pub struct RegisterRequest {
     pub feed_id: Option<String>,
-    pub feed_set: Option<String>,
     pub static_url: Option<String>,
     pub static_path: Option<String>,
     pub trip_updates_url: Option<String>,
@@ -53,16 +51,13 @@ struct FeedData {
     rt_ttl: Duration,
     static_ttl: Duration,
     db: StaticDb,
-    static_key: String,
     static_fetched: Instant,
     static_fetched_unix: u64,
-    /// When the static copy was last confirmed current: a download, or a feed-set manifest whose
-    /// static version still matches. The static TTL runs from here.
+    /// When the static zip was last downloaded. The static TTL runs from here.
     static_checked: Instant,
     trip_updates: Option<CachedFeed>,
     vehicles: Option<CachedFeed>,
     alerts: Option<CachedFeed>,
-    manifest: Option<Manifest>,
     rt_fetched: Option<Instant>,
     rt_fetched_unix: u64,
     last_error: Option<String>,
@@ -360,6 +355,7 @@ impl Catalog {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn departure_board(
         &self,
         feed_id: Option<String>,
@@ -418,6 +414,7 @@ impl Catalog {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn decode(
         &self,
         path: Option<String>,
@@ -528,7 +525,7 @@ impl Catalog {
                 drop(feeds);
                 if errors.is_empty() {
                     Err(err("no feed registered").hint(
-                        "set GTFS_RT_MCP_FEED_SET or GTFS_RT_MCP_STATIC in the MCP client env, or call register_feed",
+                        "set GTFS_RT_MCP_STATIC in the MCP client env, or call register_feed",
                     ))
                 } else {
                     Err(err("feed configuration is invalid")
@@ -613,12 +610,7 @@ impl Catalog {
                 headers: data.headers.clone(),
                 rt_ttl: data.rt_ttl,
                 static_ttl: data.static_ttl,
-                static_key: data.static_key.clone(),
-                generation: data.manifest.as_ref().and_then(|m| m.generation_id.clone()),
-                need_rt,
-                // Direct feeds republish one mutable zip. Feed-set static files are immutable,
-                // so a static timer only re-reads the manifest.
-                reload_direct_static: force || recheck_static,
+                reload_static: force || recheck_static,
             }
         };
         let update = match refresh_loaded(&self.http, &plan).await {
@@ -644,179 +636,54 @@ struct RefreshPlan {
     headers: BTreeMap<String, String>,
     rt_ttl: Duration,
     static_ttl: Duration,
-    static_key: String,
-    generation: Option<String>,
-    need_rt: bool,
-    reload_direct_static: bool,
+    reload_static: bool,
+}
+
+struct RealtimeUpdate {
+    trip_updates: Option<CachedFeed>,
+    vehicles: Option<CachedFeed>,
+    alerts: Option<CachedFeed>,
 }
 
 enum FeedUpdate {
-    Full(FeedData),
-    Realtime {
-        manifest: Option<Manifest>,
-        trip_updates: Option<CachedFeed>,
-        vehicles: Option<CachedFeed>,
-        alerts: Option<CachedFeed>,
-    },
-    /// The feed-set still names the loaded generation. Its artifacts are immutable, so nothing is
-    /// downloaded; `rt_current` marks the realtime copy as checked.
-    ManifestOnly {
-        manifest: Manifest,
-        rt_current: bool,
-    },
+    Full(Box<FeedData>),
+    Realtime(Box<RealtimeUpdate>),
 }
 
 fn apply_update(data: &mut FeedData, update: FeedUpdate) {
     match update {
-        FeedUpdate::Full(fresh) => *data = fresh,
-        FeedUpdate::Realtime {
-            manifest,
-            trip_updates,
-            vehicles,
-            alerts,
-        } => {
-            if let Some(manifest) = manifest {
-                data.manifest = Some(manifest);
-                data.static_checked = Instant::now();
-            }
-            data.trip_updates = trip_updates;
-            data.vehicles = vehicles;
-            data.alerts = alerts;
+        FeedUpdate::Full(fresh) => *data = *fresh,
+        FeedUpdate::Realtime(update) => {
+            data.trip_updates = update.trip_updates;
+            data.vehicles = update.vehicles;
+            data.alerts = update.alerts;
             data.rt_fetched = Some(Instant::now());
             data.rt_fetched_unix = now_unix() as u64;
             data.last_error = None;
         }
-        FeedUpdate::ManifestOnly {
-            manifest,
-            rt_current,
-        } => {
-            data.manifest = Some(manifest);
-            data.static_checked = Instant::now();
-            if rt_current {
-                data.rt_fetched = Some(Instant::now());
-                data.rt_fetched_unix = now_unix() as u64;
-            }
-            data.last_error = None;
-        }
     }
-}
-
-/// What identifies a feed-set's static GTFS. Amtrak-GTFS-RT serves the same static.zip under every
-/// generation's URL until `static_version` changes, so the version is the key and the
-/// generation-scoped URL is not. Without a version, the URL is all there is.
-fn static_key_for(feed_set: &Loc, manifest: &Manifest) -> String {
-    match manifest.static_version.as_deref().map(str::trim) {
-        Some(version) if !version.is_empty() => {
-            format!("{}|static_version:{version}", loc_label(feed_set))
-        }
-        _ => loc_label(&manifest.static_zip),
-    }
-}
-
-fn same_generation(plan: &RefreshPlan, feed_set: &Loc, manifest: &Manifest) -> bool {
-    match (&plan.generation, &manifest.generation_id) {
-        (Some(previous), Some(next)) => {
-            previous == next && plan.static_key == static_key_for(feed_set, manifest)
-        }
-        _ => false,
-    }
-}
-
-async fn read_manifest(
-    http: &reqwest::Client,
-    url: &Loc,
-    headers: &BTreeMap<String, String>,
-) -> Result<Manifest, AppError> {
-    let bytes = fetch_bytes(http, url, headers, 2_000_000).await?;
-    parse_feed_set(&bytes, url)
-}
-
-/// Brings a loaded feed-set up to `manifest`, downloading only what changed.
-async fn feed_set_update(
-    http: &reqwest::Client,
-    plan: &RefreshPlan,
-    url: &Loc,
-    manifest: Manifest,
-) -> Result<FeedUpdate, AppError> {
-    if same_generation(plan, url, &manifest) {
-        return Ok(FeedUpdate::ManifestOnly {
-            manifest,
-            rt_current: plan.need_rt,
-        });
-    }
-    if !plan.static_key.is_empty() && plan.static_key == static_key_for(url, &manifest) {
-        let (trip_updates, vehicles, alerts) = download_triplet(
-            http,
-            &plan.headers,
-            manifest.trip_updates.as_ref(),
-            manifest.vehicle_positions.as_ref(),
-            manifest.alerts.as_ref(),
-        )
-        .await?;
-        return Ok(FeedUpdate::Realtime {
-            manifest: Some(manifest),
-            trip_updates,
-            vehicles,
-            alerts,
-        });
-    }
-    Ok(FeedUpdate::Full(
-        load_feed_set(http, plan, url, manifest).await?,
-    ))
 }
 
 async fn refresh_loaded(
     http: &reqwest::Client,
     plan: &RefreshPlan,
 ) -> Result<FeedUpdate, AppError> {
-    match &plan.spec {
-        FeedSpec::FeedSet { url } => {
-            let manifest = read_manifest(http, url, &plan.headers).await?;
-            match feed_set_update(http, plan, url, manifest).await {
-                // A publisher that prunes superseded generations can delete this one between the
-                // manifest read and its artifacts. Re-read once and take the newer generation.
-                Err(error) if is_not_found(&error) => {
-                    let manifest = read_manifest(http, url, &plan.headers).await?;
-                    feed_set_update(http, plan, url, manifest).await
-                }
-                result => result,
-            }
-        }
-        FeedSpec::Direct {
-            static_gtfs,
+    if !plan.reload_static {
+        let (trip_updates, vehicles, alerts) = download_triplet(
+            http,
+            &plan.headers,
+            plan.spec.trip_updates.as_ref(),
+            plan.spec.vehicle_positions.as_ref(),
+            plan.spec.alerts.as_ref(),
+        )
+        .await?;
+        return Ok(FeedUpdate::Realtime(Box::new(RealtimeUpdate {
             trip_updates,
-            vehicle_positions,
+            vehicles,
             alerts,
-        } => {
-            if !plan.reload_direct_static {
-                let (trip_updates, vehicles, alerts) = download_triplet(
-                    http,
-                    &plan.headers,
-                    trip_updates.as_ref(),
-                    vehicle_positions.as_ref(),
-                    alerts.as_ref(),
-                )
-                .await?;
-                return Ok(FeedUpdate::Realtime {
-                    manifest: None,
-                    trip_updates,
-                    vehicles,
-                    alerts,
-                });
-            }
-            Ok(FeedUpdate::Full(
-                load_direct(
-                    http,
-                    plan,
-                    static_gtfs,
-                    trip_updates.as_ref(),
-                    vehicle_positions.as_ref(),
-                    alerts.as_ref(),
-                )
-                .await?,
-            ))
-        }
+        })));
     }
+    Ok(FeedUpdate::Full(Box::new(load_direct(http, plan).await?)))
 }
 
 async fn load_feed(
@@ -829,100 +696,34 @@ async fn load_feed(
 ) -> Result<FeedData, AppError> {
     let plan = RefreshPlan {
         id,
-        spec: spec.clone(),
+        spec,
         headers,
         rt_ttl,
         static_ttl,
-        static_key: String::new(),
-        generation: None,
-        need_rt: true,
-        reload_direct_static: true,
+        reload_static: true,
     };
-    match spec {
-        FeedSpec::FeedSet { url } => {
-            let manifest = read_manifest(http, &url, &plan.headers).await?;
-            match load_feed_set(http, &plan, &url, manifest).await {
-                Err(error) if is_not_found(&error) => {
-                    let manifest = read_manifest(http, &url, &plan.headers).await?;
-                    load_feed_set(http, &plan, &url, manifest).await
-                }
-                result => result,
-            }
-        }
-        FeedSpec::Direct {
-            static_gtfs,
-            trip_updates,
-            vehicle_positions,
-            alerts,
-        } => {
-            load_direct(
-                http,
-                &plan,
-                &static_gtfs,
-                trip_updates.as_ref(),
-                vehicle_positions.as_ref(),
-                alerts.as_ref(),
-            )
-            .await
-        }
-    }
+    load_direct(http, &plan).await
 }
 
-async fn load_feed_set(
-    http: &reqwest::Client,
-    plan: &RefreshPlan,
-    url: &Loc,
-    manifest: Manifest,
-) -> Result<FeedData, AppError> {
-    let static_key = static_key_for(url, &manifest);
-    let zip = fetch_bytes(http, &manifest.static_zip, &plan.headers, MAX_STATIC_BYTES).await?;
+async fn load_direct(http: &reqwest::Client, plan: &RefreshPlan) -> Result<FeedData, AppError> {
+    let zip = fetch_bytes(
+        http,
+        &plan.spec.static_gtfs,
+        &plan.headers,
+        MAX_STATIC_BYTES,
+    )
+    .await?;
     let db = tokio::task::spawn_blocking(move || StaticDb::load_zip(&zip))
         .await
         .map_err(|e| err(format!("static load: {e}")))??;
     let (trip_updates, vehicles, alerts) = download_triplet(
         http,
         &plan.headers,
-        manifest.trip_updates.as_ref(),
-        manifest.vehicle_positions.as_ref(),
-        manifest.alerts.as_ref(),
+        plan.spec.trip_updates.as_ref(),
+        plan.spec.vehicle_positions.as_ref(),
+        plan.spec.alerts.as_ref(),
     )
     .await?;
-    Ok(FeedData {
-        id: plan.id.clone(),
-        spec: FeedSpec::FeedSet { url: url.clone() },
-        headers: plan.headers.clone(),
-        rt_ttl: plan.rt_ttl,
-        static_ttl: plan.static_ttl,
-        db,
-        static_key,
-        static_fetched: Instant::now(),
-        static_fetched_unix: now_unix() as u64,
-        static_checked: Instant::now(),
-        trip_updates,
-        vehicles,
-        alerts,
-        manifest: Some(manifest),
-        rt_fetched: Some(Instant::now()),
-        rt_fetched_unix: now_unix() as u64,
-        last_error: None,
-    })
-}
-
-async fn load_direct(
-    http: &reqwest::Client,
-    plan: &RefreshPlan,
-    static_gtfs: &Loc,
-    trip_updates: Option<&Loc>,
-    vehicle_positions: Option<&Loc>,
-    alerts: Option<&Loc>,
-) -> Result<FeedData, AppError> {
-    let static_key = loc_label(static_gtfs);
-    let zip = fetch_bytes(http, static_gtfs, &plan.headers, MAX_STATIC_BYTES).await?;
-    let db = tokio::task::spawn_blocking(move || StaticDb::load_zip(&zip))
-        .await
-        .map_err(|e| err(format!("static load: {e}")))??;
-    let (trip_updates, vehicles, alerts) =
-        download_triplet(http, &plan.headers, trip_updates, vehicle_positions, alerts).await?;
     Ok(FeedData {
         id: plan.id.clone(),
         spec: plan.spec.clone(),
@@ -930,14 +731,12 @@ async fn load_direct(
         rt_ttl: plan.rt_ttl,
         static_ttl: plan.static_ttl,
         db,
-        static_key,
         static_fetched: Instant::now(),
         static_fetched_unix: now_unix() as u64,
         static_checked: Instant::now(),
         trip_updates,
         vehicles,
         alerts,
-        manifest: None,
         rt_fetched: Some(Instant::now()),
         rt_fetched_unix: now_unix() as u64,
         last_error: None,
@@ -979,24 +778,13 @@ async fn download_feed(
 }
 
 fn health_json(data: &FeedData, now: i64) -> Value {
-    let source = match &data.spec {
-        FeedSpec::FeedSet { url } => json!({
-            "kind": "feed_set",
-            "url": loc_label(url),
-        }),
-        FeedSpec::Direct {
-            static_gtfs,
-            trip_updates,
-            vehicle_positions,
-            alerts,
-        } => json!({
-            "kind": "direct",
-            "static": loc_label(static_gtfs),
-            "trip_updates": trip_updates.as_ref().map(loc_label),
-            "vehicle_positions": vehicle_positions.as_ref().map(loc_label),
-            "alerts": alerts.as_ref().map(loc_label),
-        }),
-    };
+    let source = json!({
+        "kind": "direct",
+        "static": loc_label(&data.spec.static_gtfs),
+        "trip_updates": data.spec.trip_updates.as_ref().map(loc_label),
+        "vehicle_positions": data.spec.vehicle_positions.as_ref().map(loc_label),
+        "alerts": data.spec.alerts.as_ref().map(loc_label),
+    });
     let rt_age = data
         .rt_fetched
         .map(|t| t.elapsed().as_secs())
@@ -1030,26 +818,21 @@ fn health_json(data: &FeedData, now: i64) -> Value {
             "vehicle_positions": feed_health(data.vehicles.as_ref(), now),
             "alerts": feed_health(data.alerts.as_ref(), now),
         },
-        "feed_set": data.manifest.as_ref().map(manifest_json),
     })
 }
 
 fn failure_json(failure: &FailedFeed) -> Value {
     let request = &failure.request;
-    let source = if let Some(feed_set) = &request.feed_set {
-        json!({ "kind": "feed_set", "url": feed_set })
-    } else {
-        json!({
-            "kind": "direct",
-            "static": request.static_url.clone().or(request.static_path.clone()),
-            "trip_updates": request.trip_updates_url.clone().or(request.trip_updates_path.clone()),
-            "vehicle_positions": request
-                .vehicle_positions_url
-                .clone()
-                .or(request.vehicle_positions_path.clone()),
-            "alerts": request.alerts_url.clone().or(request.alerts_path.clone()),
-        })
-    };
+    let source = json!({
+        "kind": "direct",
+        "static": request.static_url.clone().or(request.static_path.clone()),
+        "trip_updates": request.trip_updates_url.clone().or(request.trip_updates_path.clone()),
+        "vehicle_positions": request
+            .vehicle_positions_url
+            .clone()
+            .or(request.vehicle_positions_path.clone()),
+        "alerts": request.alerts_url.clone().or(request.alerts_path.clone()),
+    });
     realtime::obj([
         ("feed_id", json!(failure.request.feed_id)),
         ("ready", json!(false)),
@@ -1105,22 +888,13 @@ fn page_list(feed_id: &str, key: &str, rows: Vec<Value>, total: usize, offset: u
 }
 
 fn spec_from_request(request: &RegisterRequest) -> Result<FeedSpec, AppError> {
-    let feed_set = nonempty(request.feed_set.clone());
-    let static_loc = one_loc(
+    let Some(static_gtfs) = one_loc(
         request.static_url.clone(),
         request.static_path.clone(),
         "static GTFS",
-    )?;
-    if feed_set.is_some() && static_loc.is_some() {
-        return Err(err("pass either feed_set or a static zip, not both"));
-    }
-    if let Some(feed_set) = feed_set {
-        return Ok(FeedSpec::FeedSet {
-            url: parse_user_loc(&feed_set)?,
-        });
-    }
-    let Some(static_gtfs) = static_loc else {
-        return Err(err("pass feed_set, static_url, or static_path"));
+    )?
+    else {
+        return Err(err("pass static_url or static_path"));
     };
     let trip_updates = one_loc(
         request.trip_updates_url.clone(),
@@ -1137,7 +911,7 @@ fn spec_from_request(request: &RegisterRequest) -> Result<FeedSpec, AppError> {
         request.alerts_path.clone(),
         "alerts",
     )?;
-    Ok(FeedSpec::Direct {
+    Ok(FeedSpec {
         static_gtfs,
         trip_updates,
         vehicle_positions,
@@ -1224,7 +998,7 @@ pub(crate) fn validate_startup_request(request: &RegisterRequest) -> Result<Stri
     Ok(id)
 }
 
-fn normalize_id(id: Option<&str>) -> Result<String, AppError> {
+pub(crate) fn normalize_id(id: Option<&str>) -> Result<String, AppError> {
     let id = id
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -1278,17 +1052,24 @@ mod tests {
         path
     }
 
+    fn harbor_request(paths: &fixtures::HarborPaths, feed_id: &str) -> RegisterRequest {
+        RegisterRequest {
+            feed_id: Some(feed_id.into()),
+            static_path: Some(paths.static_zip.display().to_string()),
+            trip_updates_path: Some(paths.trip_updates.display().to_string()),
+            vehicle_positions_path: Some(paths.vehicle_positions.display().to_string()),
+            alerts_path: Some(paths.alerts.display().to_string()),
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
-    async fn harbor_feed_set_answers_status_board_and_alerts() {
+    async fn harbor_answers_status_board_and_alerts() {
         let dir = temp_dir("harbor");
         let paths = fixtures::materialize(&dir).unwrap();
         let catalog = Catalog::new().unwrap();
         catalog
-            .register(RegisterRequest {
-                feed_id: Some("harbor".into()),
-                feed_set: Some(paths.feed_set.display().to_string()),
-                ..Default::default()
-            })
+            .register(harbor_request(&paths, "harbor"))
             .await
             .unwrap();
 
@@ -1385,19 +1166,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_feed_set_cannot_read_local_files() {
+    async fn http_direct_urls_serve_harbor_bytes() {
+        let dir = temp_dir("http-feed");
+        let _paths = fixtures::materialize(&dir).unwrap();
+        let root = Arc::new(dir.clone());
         let app = axum::Router::new().route(
-            "/v1/feed-set.json",
-            axum::routing::get(|| async {
-                axum::Json(json!({
-                    "generation_id": "bad",
-                    "urls": {
-                        "static_zip": "file:///etc/passwd",
-                        "trip_updates": "file:///etc/passwd",
-                        "vehicle_positions": "file:///etc/passwd",
-                        "alerts": "file:///etc/passwd"
+            "/{name}",
+            axum::routing::get({
+                let root = Arc::clone(&root);
+                move |axum::extract::Path(name): axum::extract::Path<String>| {
+                    let root = Arc::clone(&root);
+                    async move {
+                        match tokio::fs::read(root.join(&name)).await {
+                            Ok(bytes) => (axum::http::StatusCode::OK, bytes),
+                            Err(_) => (axum::http::StatusCode::NOT_FOUND, Vec::new()),
+                        }
                     }
-                }))
+                }
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1406,209 +1191,22 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let catalog = Catalog::new().unwrap();
-        let error = catalog
-            .register(RegisterRequest {
-                feed_set: Some(format!("http://{addr}/v1/feed-set.json")),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err();
-        assert!(error.error.contains("file://"), "{}", error.error);
-    }
-
-    #[tokio::test]
-    async fn http_feed_set_joins_origin_and_serves_bytes() {
-        let dir = temp_dir("http-feed");
-        let paths = fixtures::materialize(&dir).unwrap();
-        let root = Arc::new(dir.clone());
-        let at = paths.at_unix;
-        let app = axum::Router::new()
-            .route(
-                "/v1/feed-set.json",
-                axum::routing::get(move || async move {
-                    axum::Json(json!({
-                        "generation_id": "gen-1",
-                        "generated_at_unix": at,
-                        "static_version": "harbor-1",
-                        "source": "fixture",
-                        "urls": {
-                            "static_zip": "/v1/generations/gen-1/static.zip",
-                            "trip_updates": "/v1/generations/gen-1/trip-updates.pb",
-                            "vehicle_positions": "/v1/generations/gen-1/vehicle-positions.pb",
-                            "alerts": "/v1/generations/gen-1/alerts.pb"
-                        }
-                    }))
-                }),
-            )
-            .route(
-                "/v1/generations/{id}/{name}",
-                axum::routing::get({
-                    let root = Arc::clone(&root);
-                    move |axum::extract::Path((_, name)): axum::extract::Path<(String, String)>| {
-                        let root = Arc::clone(&root);
-                        async move {
-                            let path = root.join(&name);
-                            match tokio::fs::read(path).await {
-                                Ok(bytes) => (axum::http::StatusCode::OK, bytes),
-                                Err(_) => (axum::http::StatusCode::NOT_FOUND, Vec::new()),
-                            }
-                        }
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let catalog = Catalog::new().unwrap();
+        let file_url = |name: &str| format!("http://{addr}/{name}");
         catalog
             .register(RegisterRequest {
-                feed_set: Some(format!("http://{addr}/v1/feed-set.json")),
+                static_url: Some(file_url("static.zip")),
+                trip_updates_url: Some(file_url("trip-updates.pb")),
+                vehicle_positions_url: Some(file_url("vehicle-positions.pb")),
+                alerts_url: Some(file_url("alerts.pb")),
                 ..Default::default()
             })
             .await
             .unwrap();
         let health = catalog.health(None).await.unwrap();
-        assert_eq!(health["feed_set"]["generation_id"], "gen-1");
+        assert_eq!(health["source"]["kind"], "direct");
         assert_eq!(health["realtime"]["vehicle_positions"]["entities"], 1);
         assert_eq!(health["static"]["stops"], 6);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    /// A feed-set server shaped like Amtrak-GTFS-RT: every generation has its own URLs, the static
-    /// zip is the same bytes until `static_version` changes, and pruned generations answer 404.
-    #[derive(Default)]
-    struct Publisher {
-        generation: String,
-        static_version: String,
-        /// Generations the next manifest reads name before `generation`, oldest first.
-        queued: std::collections::VecDeque<String>,
-        pruned: std::collections::HashSet<String>,
-        static_hits: usize,
-        trip_update_hits: usize,
-    }
-
-    #[tokio::test]
-    async fn feed_set_downloads_static_once_per_static_version() {
-        let dir = temp_dir("gen-skip");
-        let paths = fixtures::materialize(&dir).unwrap();
-        let root = Arc::new(dir.clone());
-        let at = paths.at_unix;
-        let publisher = Arc::new(std::sync::Mutex::new(Publisher {
-            generation: "gen-1".into(),
-            static_version: "harbor-1".into(),
-            ..Default::default()
-        }));
-        let app = axum::Router::new()
-            .route(
-                "/v1/feed-set.json",
-                axum::routing::get({
-                    let publisher = Arc::clone(&publisher);
-                    move || {
-                        let publisher = Arc::clone(&publisher);
-                        async move {
-                            let mut state = publisher.lock().unwrap();
-                            let id = state.queued.pop_front().unwrap_or_else(|| state.generation.clone());
-                            axum::Json(json!({
-                                "generation_id": id,
-                                "generated_at_unix": at,
-                                "static_version": state.static_version,
-                                "urls": {
-                                    "static_zip": format!("/v1/generations/{id}/static.zip"),
-                                    "trip_updates": format!("/v1/generations/{id}/trip-updates.pb"),
-                                    "vehicle_positions": format!("/v1/generations/{id}/vehicle-positions.pb"),
-                                    "alerts": format!("/v1/generations/{id}/alerts.pb")
-                                }
-                            }))
-                        }
-                    }
-                }),
-            )
-            .route(
-                "/v1/generations/{id}/{name}",
-                axum::routing::get({
-                    let root = Arc::clone(&root);
-                    let publisher = Arc::clone(&publisher);
-                    move |axum::extract::Path((id, name)): axum::extract::Path<(String, String)>| {
-                        let root = Arc::clone(&root);
-                        let publisher = Arc::clone(&publisher);
-                        async move {
-                            {
-                                let mut state = publisher.lock().unwrap();
-                                if state.pruned.contains(&id) {
-                                    return (axum::http::StatusCode::NOT_FOUND, Vec::new());
-                                }
-                                match name.as_str() {
-                                    "static.zip" => state.static_hits += 1,
-                                    "trip-updates.pb" => state.trip_update_hits += 1,
-                                    _ => {}
-                                }
-                            }
-                            match tokio::fs::read(root.join(&name)).await {
-                                Ok(bytes) => (axum::http::StatusCode::OK, bytes),
-                                Err(_) => (axum::http::StatusCode::NOT_FOUND, Vec::new()),
-                            }
-                        }
-                    }
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let hits = || {
-            let state = publisher.lock().unwrap();
-            (state.static_hits, state.trip_update_hits)
-        };
-        let catalog = Catalog::new().unwrap();
-        catalog
-            .register(RegisterRequest {
-                feed_set: Some(format!("http://{addr}/v1/feed-set.json")),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(hits(), (1, 1));
-
-        // Same generation: its artifacts are immutable, so nothing is downloaded again.
-        catalog.refresh(None).await.unwrap();
-        let health = catalog.health(None).await.unwrap();
-        assert_eq!(health["feed_set"]["generation_id"], "gen-1");
-        assert_eq!(hits(), (1, 1));
-
-        // New generation, same static_version: only the protobufs are fetched.
-        publisher.lock().unwrap().generation = "gen-2".into();
-        catalog.refresh(None).await.unwrap();
-        let health = catalog.health(None).await.unwrap();
-        assert_eq!(health["feed_set"]["generation_id"], "gen-2");
-        assert_eq!(health["realtime"]["last_error"], Value::Null);
-        assert_eq!(hits(), (1, 2));
-
-        // The manifest names gen-3, but it is pruned before its artifacts are read; gen-4 is current.
-        {
-            let mut state = publisher.lock().unwrap();
-            state.queued.push_back("gen-3".into());
-            state.pruned.insert("gen-3".into());
-            state.generation = "gen-4".into();
-        }
-        catalog.refresh(None).await.unwrap();
-        let health = catalog.health(None).await.unwrap();
-        assert_eq!(health["feed_set"]["generation_id"], "gen-4");
-        assert_eq!(health["realtime"]["last_error"], Value::Null);
-        assert_eq!(hits(), (1, 3));
-
-        // A new static_version loads the static zip again.
-        {
-            let mut state = publisher.lock().unwrap();
-            state.generation = "gen-5".into();
-            state.static_version = "harbor-2".into();
-        }
-        catalog.refresh(None).await.unwrap();
-        let health = catalog.health(None).await.unwrap();
-        assert_eq!(health["feed_set"]["static_version"], "harbor-2");
-        assert_eq!(hits(), (2, 4));
+        assert!(health.get("feed_set").is_none(), "{health}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1617,8 +1215,8 @@ mod tests {
         let secret = "header-secret-value";
         let catalog = Catalog::new().unwrap();
         catalog.add_config_errors(vec![json!({
-            "error": "numbered feeds skip 2",
-            "var": "GTFS_RT_MCP_FEED_2_STATIC"
+            "error": "startup note",
+            "var": "GTFS_RT_MCP_STATIC"
         })]);
         let mut headers = BTreeMap::new();
         headers.insert("x-api-key".into(), secret.into());
@@ -1664,11 +1262,7 @@ mod tests {
         let dir = temp_dir("clear-failure");
         let paths = fixtures::materialize(&dir).unwrap();
         catalog
-            .register(RegisterRequest {
-                feed_id: Some("amtrak".into()),
-                feed_set: Some(paths.feed_set.display().to_string()),
-                ..Default::default()
-            })
+            .register(harbor_request(&paths, "amtrak"))
             .await
             .unwrap();
         let health = catalog.health(Some("amtrak".into())).await.unwrap();

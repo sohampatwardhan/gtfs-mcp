@@ -10,8 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protobuf
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protobuf and ripgrep
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler ripgrep
+      - name: Reject hardcoded GTFS endpoints
+        run: bash .github/scripts/check-gtfs-urls.sh
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked
       - name: Release build

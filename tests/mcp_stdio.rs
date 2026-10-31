@@ -16,14 +16,20 @@ async fn stdio_lists_tools_and_reads_harbor() {
     let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gtfs-rt-mcp"));
     command
-        .arg("--feed-set")
-        .arg(&paths.feed_set)
+        .arg("--static")
+        .arg(&paths.static_zip)
+        .arg("--trip-updates")
+        .arg(&paths.trip_updates)
+        .arg("--vehicle-positions")
+        .arg(&paths.vehicle_positions)
+        .arg("--alerts")
+        .arg(&paths.alerts)
         .arg("stdio")
         .env("GTFS_RT_MCP_LOG", "error");
-    let client = ()
-        .serve(TokioChildProcess::new(command).expect("spawn"))
-        .await
-        .expect("initialize");
+    let client =
+        ().serve(TokioChildProcess::new(command).expect("spawn"))
+            .await
+            .expect("initialize");
     let tools = client.peer().list_all_tools().await.expect("tools");
     let mut names: Vec<_> = tools.iter().map(|tool| tool.name.to_string()).collect();
     names.sort();
@@ -63,7 +69,11 @@ async fn stdio_lists_tools_and_reads_harbor() {
         .await
         .expect("trip_status");
     assert_ne!(result.is_error, Some(true), "{result:?}");
-    let text = result.content.first().and_then(|block| block.as_text()).unwrap();
+    let text = result
+        .content
+        .first()
+        .and_then(|block| block.as_text())
+        .unwrap();
     let value: serde_json::Value = serde_json::from_str(&text.text).unwrap();
     assert_eq!(value["trips"][0]["at_stop"]["track"], "12");
     assert_eq!(value["trips"][0]["trip_short_name"], "177");

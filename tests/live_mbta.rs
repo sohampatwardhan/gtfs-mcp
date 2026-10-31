@@ -1,43 +1,70 @@
-//! Opt-in check against the public MBTA feed. `cargo test --test live_mbta -- --ignored --nocapture`
-
-use std::sync::Arc;
+//! Opt-in check against a live GTFS static zip and GTFS-Realtime protobufs.
+//!
+//! Skips unless `GTFS_RT_MCP_STATIC` is set. Optional realtime URLs use the same
+//! names as the server: `GTFS_RT_MCP_TRIP_UPDATES`, `GTFS_RT_MCP_VEHICLE_POSITIONS`,
+//! and `GTFS_RT_MCP_ALERTS`.
+//!
+//! ```text
+//! GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip \
+//! GTFS_RT_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+//! GTFS_RT_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+//! GTFS_RT_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+//! cargo test --test live_mbta -- --nocapture
+//! ```
 
 use serde_json::Value;
 
+fn env_url(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 #[tokio::test]
-#[ignore]
-async fn mbta_public_feed() {
-    let catalog = Arc::new(gtfs_rt_mcp::Catalog::new().unwrap());
+async fn live_feed_from_env() {
+    let Some(static_url) = env_url("GTFS_RT_MCP_STATIC") else {
+        eprintln!("skipping live feed test: GTFS_RT_MCP_STATIC is unset");
+        return;
+    };
+    let trip_updates_url = env_url("GTFS_RT_MCP_TRIP_UPDATES");
+    let vehicle_positions_url = env_url("GTFS_RT_MCP_VEHICLE_POSITIONS");
+    let alerts_url = env_url("GTFS_RT_MCP_ALERTS");
+
+    let catalog = std::sync::Arc::new(gtfs_rt_mcp::Catalog::new().unwrap());
     let health = catalog
         .register(gtfs_rt_mcp::RegisterRequest {
-            feed_id: Some("mbta".into()),
-            static_url: Some("https://cdn.mbta.com/MBTA_GTFS.zip".into()),
-            trip_updates_url: Some("https://cdn.mbta.com/realtime/TripUpdates.pb".into()),
-            vehicle_positions_url: Some(
-                "https://cdn.mbta.com/realtime/VehiclePositions.pb".into(),
-            ),
-            alerts_url: Some("https://cdn.mbta.com/realtime/Alerts.pb".into()),
+            feed_id: Some("live".into()),
+            static_url: Some(static_url),
+            trip_updates_url: trip_updates_url.clone(),
+            vehicle_positions_url: vehicle_positions_url.clone(),
+            alerts_url: alerts_url.clone(),
             rt_ttl_secs: Some(30),
             ..Default::default()
         })
         .await
-        .expect("register MBTA");
-    assert!(health["static"]["stops"].as_i64().unwrap_or(0) > 100);
-    assert!(health["realtime"]["vehicle_positions"]["entities"].as_i64().unwrap_or(0) > 0);
-    let agency = health["static"]["agency"].as_str().unwrap_or("");
-    assert!(
-        agency.contains("MBTA") || agency.contains("Massachusetts Bay"),
-        "dominant agency was {agency}"
-    );
+        .expect("register live feed");
+    assert!(health["static"]["stops"].as_i64().unwrap_or(0) > 0);
+    if vehicle_positions_url.is_some() {
+        assert!(
+            health["realtime"]["vehicle_positions"]["entities"]
+                .as_i64()
+                .unwrap_or(0)
+                > 0
+        );
+    }
 
     let stops = catalog
-        .search_stops(Some("mbta".into()), "South Station", 5, 0)
+        .search_stops(Some("live".into()), "", 5, 0)
         .await
         .unwrap();
-    let stop_id = stops["stops"][0]["stop_id"].as_str().unwrap().to_string();
+    let stop_id = stops["stops"][0]["stop_id"]
+        .as_str()
+        .expect("a stop")
+        .to_string();
     let board = catalog
         .departure_board(
-            Some("mbta".into()),
+            Some("live".into()),
             &stop_id,
             None,
             None,
@@ -51,7 +78,7 @@ async fn mbta_public_feed() {
         .unwrap();
     let vehicles = catalog
         .vehicles(
-            Some("mbta".into()),
+            Some("live".into()),
             gtfs_rt_mcp::VehicleQuery {
                 route: None,
                 trip: None,
@@ -65,7 +92,7 @@ async fn mbta_public_feed() {
         .unwrap();
     let alerts = catalog
         .alerts(
-            Some("mbta".into()),
+            Some("live".into()),
             gtfs_rt_mcp::AlertQuery {
                 route: None,
                 stop: None,
@@ -86,9 +113,12 @@ async fn mbta_public_feed() {
     println!("VEHICLES {}", compact(&vehicles));
     println!("ALERTS {}", compact(&alerts));
     assert!(board["departures"].as_array().is_some());
-    assert!(board["expanded_stops"].as_u64().unwrap_or(999) < 80);
-    assert!(alerts["alerts"].as_array().is_some());
-    assert!(vehicles["vehicles"].as_array().unwrap().len() > 0);
+    if alerts_url.is_some() {
+        assert!(alerts["alerts"].as_array().is_some());
+    }
+    if vehicle_positions_url.is_some() {
+        assert!(!vehicles["vehicles"].as_array().unwrap().is_empty());
+    }
 }
 
 fn compact(value: &Value) -> String {
