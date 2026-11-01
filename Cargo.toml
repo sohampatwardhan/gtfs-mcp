@@ -1,7 +1,7 @@
 [package]
 name = "gtfs-mcp"
 description = "MCP server for GTFS static schedules and optional GTFS-Realtime feeds"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"

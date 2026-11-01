@@ -8,7 +8,6 @@ on:
 permissions:
   contents: read
   id-token: write
-  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
-      minor: ${{ steps.version.outputs.minor }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,7 +31,6 @@ jobs:
           bash scripts/check-versions.sh
           version=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' Cargo.toml | head -n 1)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "minor=${version%.*}" >> "$GITHUB_OUTPUT"
       - name: Reject hardcoded GTFS endpoints
         run: bash .github/scripts/check-gtfs-urls.sh
       - name: Format
@@ -46,7 +43,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+      - run: |
+          node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+          node --test npm/gtfs-mcp/test/release.test.js
       - name: cargo publish dry run
         run: cargo publish --dry-run --locked
 
@@ -203,116 +202,24 @@ jobs:
             fi
           done
 
-  docker:
-    needs: verify
-    if: needs.verify.result == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      skip: ${{ steps.check.outputs.skip }}
-    steps:
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Skip when this image tag is already published
-        id: check
-        run: |
-          version="${{ needs.verify.outputs.version }}"
-          if docker buildx imagetools inspect "ghcr.io/sohampatwardhan/gtfs-mcp:v${version}" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "ghcr.io/sohampatwardhan/gtfs-mcp:v${version} already exists"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  docker-build:
-    needs: [verify, docker]
-    if: needs.verify.result == 'success' && needs.docker.outputs.skip != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            platform: linux/amd64
-            artifact: digest-amd64
-          - runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            artifact: digest-arm64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push by digest
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,name=ghcr.io/sohampatwardhan/gtfs-mcp,push-by-digest=true,push=true
-      - name: Save digest
-        run: |
-          mkdir -p "$RUNNER_TEMP/digests"
-          digest="${{ steps.build.outputs.digest }}"
-          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-
-  docker-manifest:
-    needs: [verify, docker, docker-build]
-    if: needs.verify.result == 'success' && needs.docker.outputs.skip != 'true' && needs.docker-build.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: digest-*
-          merge-multiple: true
-          path: digests
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish multi-arch tags
-        env:
-          VERSION: ${{ needs.verify.outputs.version }}
-          MINOR: ${{ needs.verify.outputs.minor }}
-        run: |
-          set -euo pipefail
-          images=()
-          for digest in digests/*; do
-            images+=("ghcr.io/sohampatwardhan/gtfs-mcp@sha256:$(basename "$digest")")
-          done
-          docker buildx imagetools create \
-            -t "ghcr.io/sohampatwardhan/gtfs-mcp:v${VERSION}" \
-            -t "ghcr.io/sohampatwardhan/gtfs-mcp:${MINOR}" \
-            -t "ghcr.io/sohampatwardhan/gtfs-mcp:latest" \
-            "${images[@]}"
-
   npm:
-    needs: [verify, binaries]
+    needs: [verify, github-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: bin-*
-          path: artifacts
       # Do not set registry-url. actions/setup-node@v4 then writes always-auth
-      # and a placeholder NODE_AUTH_TOKEN, which npm warns about and which
-      # replaces trusted publishing (OIDC).
+      # and a placeholder NODE_AUTH_TOKEN, which hides npmjs.org trusted publishing.
+      # Publish only after github-release has uploaded the archives the launcher downloads.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Publish npm packages that are not already published
-        run: bash scripts/publish-npm.sh artifacts
+      - name: Publish gtfs-mcp to npmjs.org when this version is new
+        run: bash scripts/publish-npm.sh
+      - name: Publish @sohampatwardhan/gtfs-mcp to GitHub Packages when this version is new
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish-github-packages.sh
