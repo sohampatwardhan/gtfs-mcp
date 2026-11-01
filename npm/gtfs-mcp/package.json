@@ -1,6 +1,6 @@
 {
   "name": "gtfs-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP server for GTFS static schedules and optional GTFS-Realtime feeds",
   "license": "MIT",
   "repository": {
