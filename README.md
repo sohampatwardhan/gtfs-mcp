@@ -47,6 +47,17 @@ The `gtfs-mcp` package is a small launcher with no install scripts, so `npx --ig
 
 `GTFS_MCP_BINARY` is a path to a local `gtfs-mcp` binary and skips the download. `HTTPS_PROXY` (or `https_proxy`, then `HTTP_PROXY`) is honored. `NO_PROXY` skips the proxy for matching hosts.
 
+The same launcher is also published as `@sohampatwardhan/gtfs-mcp` on GitHub Packages so it appears in this repository's Packages list. `npx -y gtfs-mcp` on npmjs.org stays the usual install. To use the scoped package, point the scope at GitHub Packages in `.npmrc`. That registry needs a GitHub token with `read:packages`:
+
+```text
+@sohampatwardhan:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
+```
+
+```bash
+npx -y @sohampatwardhan/gtfs-mcp --version
+```
+
 ### MCP clients
 
 npx in Cursor, Claude Desktop, or Claude Code:
