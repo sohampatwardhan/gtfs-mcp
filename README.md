@@ -43,7 +43,9 @@ A Homebrew tap is not part of this release. It would need a separate tap reposit
 npx -y gtfs-mcp --version
 ```
 
-The `gtfs-mcp` package is a small launcher. npm installs one optional platform package (`@sohampatwardhan/gtfs-mcp-linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, or `win32-x64`) and the launcher runs that binary. Arguments, environment variables, and stdio are passed through.
+The `gtfs-mcp` package is a small launcher with no install scripts, so `npx --ignore-scripts` still works. On first run it downloads the archive for its own version from GitHub Releases (linux x64 and arm64 musl, macOS x64 and arm64, Windows x64), checks `sha256sums.txt`, and caches the binary under the user cache directory for that version. Later runs use the cache. Arguments, environment variables, and stdio are passed through, and the process exits with the binary's status.
+
+`GTFS_MCP_BINARY` is a path to a local `gtfs-mcp` binary and skips the download. `HTTPS_PROXY` (or `https_proxy`, then `HTTP_PROXY`) is honored. `NO_PROXY` skips the proxy for matching hosts.
 
 ### MCP clients
 
@@ -433,4 +435,4 @@ GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `s
 - `.github/scripts/check-gtfs-urls.sh` — fails CI on a hardcoded GTFS endpoint
 - `.github/workflows/release.yml` — tag-triggered publish
 - `scripts/bump-version.sh` — bumps `Cargo.toml` and the npm packages, then commits and tags
-- `npm/` — `npx` launcher and platform package manifests
+- `npm/gtfs-mcp/` — `npx` launcher that downloads a release binary

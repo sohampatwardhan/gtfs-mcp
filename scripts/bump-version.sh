@@ -7,14 +7,22 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
 dry=0
-if [[ "${1:-}" == "--dry-run" ]]; then
-  dry=1
+no_tag=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --dry-run) dry=1 ;;
+    --no-tag) no_tag=1 ;;
+    *)
+      echo "unknown flag $1" >&2
+      exit 1
+      ;;
+  esac
   shift
-fi
+done
 
 version="${1:-}"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: scripts/bump-version.sh [--dry-run] X.Y.Z" >&2
+  echo "usage: scripts/bump-version.sh [--dry-run] [--no-tag] X.Y.Z" >&2
   exit 1
 fi
 
@@ -22,7 +30,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo "working tree is not clean" >&2
   exit 1
 fi
-if [[ "$dry" -eq 0 ]]; then
+if [[ "$dry" -eq 0 && "$no_tag" -eq 0 ]]; then
   branch=$(git rev-parse --abbrev-ref HEAD)
   if [[ "$branch" != "main" ]]; then
     echo "refusing to tag from ${branch}; check out main first" >&2
@@ -83,5 +91,9 @@ fi
 
 git add Cargo.toml Cargo.lock npm
 git commit -m "chore(release): v${version}"
+if [[ "$no_tag" -eq 1 ]]; then
+  echo "bumped to v${version} without tagging; tag from main after merge"
+  exit 0
+fi
 git tag -a "v${version}" -m "v${version}"
 echo "tagged v${version} on main; publish with: git push --follow-tags"

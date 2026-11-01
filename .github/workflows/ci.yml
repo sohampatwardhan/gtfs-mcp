@@ -31,7 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Check the npm launcher parses
-        run: node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+      - name: Check the npm launcher
+        run: |
+          node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+          node --test npm/gtfs-mcp/test/release.test.js
       - name: cargo publish dry run
         run: cargo publish --dry-run --locked

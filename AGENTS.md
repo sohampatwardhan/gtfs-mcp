@@ -58,11 +58,13 @@ git push --follow-tags
 
 Do not invent a version by editing `Cargo.toml` or `package.json` by hand. Do not create a tag any other way. Do not push a tag from a branch other than `main`.
 
-`.github/workflows/release.yml` runs on `v*.*.*`. It checks the tag against `Cargo.toml` and the npm versions, then fmt, clippy, and tests, then publishes. Jobs skip a registry when that version is already there.
+`.github/workflows/release.yml` runs on `v*.*.*`. It checks the tag against `Cargo.toml` and `npm/gtfs-mcp/package.json`, then fmt, clippy, and tests, then publishes. The GitHub Release (archives and `sha256sums.txt`) is uploaded before `npm publish`, because the launcher downloads those assets. Jobs skip a registry when that version is already there.
+
+The only npm package is unscoped `gtfs-mcp`. It has no `postinstall` and no platform packages. On first run, `npm/gtfs-mcp/lib/release.js` picks linux x64/arm64 musl, macOS x64/arm64, or Windows x64, downloads `https://github.com/sohampatwardhan/gtfs-mcp/releases/download/v<version>/...`, checks the sha256, and caches the binary. `GTFS_MCP_BINARY` skips the download. Do not add `@sohampatwardhan/gtfs-mcp-*` packages back.
 
 Agents do not publish. Do not run `cargo publish`, `npm publish`, or `git push --tags` except for the owner's `git push --follow-tags` from `main` after the bump script. Do not put `CARGO_REGISTRY_TOKEN`, `NPM_TOKEN`, or any other registry token in GitHub Actions secrets. crates.io and npm use GitHub OIDC. There is no container image.
 
-The first crates.io publish and the first npm publish of each package are one-time owner steps, because trusted publishing can be configured only after the package exists. They are documented on the release pull request. After that, only the tag workflow publishes.
+The first crates.io publish and the first npm publish of `gtfs-mcp` were one-time owner steps, because trusted publishing can be configured only after the package exists. After that, only the tag workflow publishes. Do not unpublish the 0.2.0 platform packages from this repository's tooling.
 
 A Homebrew tap is not set up. It would need another repository and a token.
 

@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sohampatwardhan/gtfs-mcp.git"
+    "url": "https://github.com/sohampatwardhan/gtfs-mcp"
   },
   "homepage": "https://github.com/sohampatwardhan/gtfs-mcp#readme",
   "bin": {
@@ -13,16 +13,10 @@
   },
   "files": [
     "bin/gtfs-mcp.js",
+    "lib/release.js",
     "README.md"
   ],
   "engines": {
     "node": ">=18"
-  },
-  "optionalDependencies": {
-    "@sohampatwardhan/gtfs-mcp-linux-x64": "0.2.0",
-    "@sohampatwardhan/gtfs-mcp-linux-arm64": "0.2.0",
-    "@sohampatwardhan/gtfs-mcp-darwin-x64": "0.2.0",
-    "@sohampatwardhan/gtfs-mcp-darwin-arm64": "0.2.0",
-    "@sohampatwardhan/gtfs-mcp-win32-x64": "0.2.0"
   }
 }

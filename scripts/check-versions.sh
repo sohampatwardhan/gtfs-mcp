@@ -19,8 +19,8 @@ import sys
 
 expected = sys.argv[1]
 paths = sorted(pathlib.Path("npm").rglob("package.json"))
-if len(paths) < 2:
-    raise SystemExit("expected the wrapper and platform package.json files")
+if paths != [pathlib.Path("npm/gtfs-mcp/package.json")]:
+    raise SystemExit(f"expected only npm/gtfs-mcp/package.json, found {paths}")
 for path in paths:
     data = json.loads(path.read_text())
     version = data.get("version")

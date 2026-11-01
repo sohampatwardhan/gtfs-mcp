@@ -43,7 +43,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+      - run: |
+          node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+          node --test npm/gtfs-mcp/test/release.test.js
       - name: cargo publish dry run
         run: cargo publish --dry-run --locked
 
@@ -201,19 +203,16 @@ jobs:
           done
 
   npm:
-    needs: [verify, binaries]
+    needs: [verify, github-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: bin-*
-          path: artifacts
       # Do not set registry-url. actions/setup-node@v4 then writes always-auth
       # and a placeholder NODE_AUTH_TOKEN, which npm warns about and which
-      # replaces trusted publishing (OIDC).
+      # replaces trusted publishing (OIDC). Publish only after github-release
+      # has uploaded the archives the launcher downloads.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Publish npm packages that are not already published
-        run: bash scripts/publish-npm.sh artifacts
+      - name: Publish gtfs-mcp to npmjs.org when this version is new
+        run: bash scripts/publish-npm.sh
