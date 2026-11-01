@@ -1,11 +1,14 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## Unreleased
 
-Nothing has been published. This version renames the project from `gtfs-rt-mcp` to `gtfs-mcp` and simplifies startup configuration. There is no compatibility alias for the old crate, npm package, binary, Docker image, or `GTFS_RT_MCP_*` environment variables.
+- The Docker image is no longer published. The existing `ghcr.io/sohampatwardhan/gtfs-mcp:v0.2.0` image is left as-is.
+
+## 0.2.0
+
+This version renames the project from `gtfs-rt-mcp` to `gtfs-mcp` and simplifies startup configuration. There is no compatibility alias for the old crate, npm package, binary, or `GTFS_RT_MCP_*` environment variables.
 
 - The crate, binary, MCP server name, and npm package are `gtfs-mcp`. The library crate is `gtfs_mcp`.
-- The container image is `ghcr.io/sohampatwardhan/gtfs-mcp`.
 - Environment variables use the `GTFS_MCP_` prefix. `GTFS_MCP_STATIC` is required. Realtime URLs are optional.
 - The repository is https://github.com/sohampatwardhan/gtfs-mcp
 

@@ -60,7 +60,7 @@ Do not invent a version by editing `Cargo.toml` or `package.json` by hand. Do no
 
 `.github/workflows/release.yml` runs on `v*.*.*`. It checks the tag against `Cargo.toml` and the npm versions, then fmt, clippy, and tests, then publishes. Jobs skip a registry when that version is already there.
 
-Agents do not publish. Do not run `cargo publish`, `npm publish`, `docker push`, or `git push --tags` except for the owner's `git push --follow-tags` from `main` after the bump script. Do not put `CARGO_REGISTRY_TOKEN`, `NPM_TOKEN`, or any other registry token in GitHub Actions secrets. crates.io and npm use GitHub OIDC. The container registry uses `GITHUB_TOKEN` with `packages: write`.
+Agents do not publish. Do not run `cargo publish`, `npm publish`, or `git push --tags` except for the owner's `git push --follow-tags` from `main` after the bump script. Do not put `CARGO_REGISTRY_TOKEN`, `NPM_TOKEN`, or any other registry token in GitHub Actions secrets. crates.io and npm use GitHub OIDC. There is no container image.
 
 The first crates.io publish and the first npm publish of each package are one-time owner steps, because trusted publishing can be configured only after the package exists. They are documented on the release pull request. After that, only the tag workflow publishes.
 

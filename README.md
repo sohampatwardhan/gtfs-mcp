@@ -37,21 +37,6 @@ The installers are `scripts/install.sh` and `scripts/install.ps1`. `GTFS_MCP_VER
 
 A Homebrew tap is not part of this release. It would need a separate tap repository and a token.
 
-### Docker
-
-The published image is multi-arch (`linux/amd64` and `linux/arm64`):
-
-```bash
-docker run --rm -p 8091:8091 \
-  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
-  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-  ghcr.io/sohampatwardhan/gtfs-mcp:latest
-```
-
-Tags are `vX.Y.Z` (for example `v0.2.0`), `X.Y` (for example `0.2`), and `latest`. MCP is at `http://127.0.0.1:8091/mcp`.
-
 ### npx
 
 ```bash
@@ -82,16 +67,7 @@ npx in Cursor, Claude Desktop, or Claude Code:
 }
 ```
 
-Docker, with the feed variables on the container and the client pointed at the published port:
-
-```bash
-docker run --rm -p 8091:8091 \
-  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
-  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-  ghcr.io/sohampatwardhan/gtfs-mcp:latest
-```
+Streamable HTTP, after `gtfs-mcp http` is already running with `GTFS_MCP_STATIC` set:
 
 ```json
 {
@@ -244,14 +220,7 @@ The same object in an MCP client `env` block is a JSON string:
 "GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
 ```
 
-`--http-headers` overrides that variable for the startup feed. Docker passes it as an environment variable:
-
-```bash
-docker run --rm -p 8091:8091 \
-  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
-  -e GTFS_MCP_HTTP_HEADERS='{"x-api-key":"replace-me"}' \
-  ghcr.io/sohampatwardhan/gtfs-mcp:latest
-```
+`--http-headers` overrides that variable for the startup feed. The same variable works in the environment of `gtfs-mcp http` or `npx -y gtfs-mcp`.
 
 That header map belongs to the one startup feed. Every HTTP download for that feed sends it: the static zip and each realtime protobuf that is configured. Filesystem paths ignore it. The same map is sent again when a TTL refresh or `refresh_feed` downloads those URLs. One feed cannot use a different header map per URL.
 
@@ -265,21 +234,7 @@ https://example.com/gtfs.zip?api_key=replace-me
 
 The server GETs that string as given. It does not strip the query. The full URL, including the query, is returned in `feed_health` and `list_feeds` under `source`, and a failed download prints `GET <url>` on stderr. Prefer a header when the publisher allows either form.
 
-Keep keys in the MCP client's env or secret store, or in the environment of the process that starts the container. Do not commit them. Header values are not written to logs or tool results. `feed_health` and `list_feeds` return header names only. If a startup load error would otherwise include a header value of 4 or more characters, that value is replaced with `[redacted]`.
-
-## Docker image
-
-Build the local image from the same Dockerfile the release workflow uses. That workflow publishes `ghcr.io/sohampatwardhan/gtfs-mcp` (see Installation). The runtime image is `debian:bookworm-slim` plus CA certificates, running as uid 10001. The process listens on `0.0.0.0:8091` inside the container. From the host, `http://127.0.0.1:8091/mcp` matches the default allowed hosts.
-
-```bash
-docker build -t gtfs-mcp .
-docker run --rm -p 8091:8091 \
-  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
-  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-  gtfs-mcp
-```
+Keep keys in the MCP client's env or secret store, or in the environment of the process that starts `gtfs-mcp`. Do not commit them. Header values are not written to logs or tool results. `feed_health` and `list_feeds` return header names only. If a startup load error would otherwise include a header value of 4 or more characters, that value is replaced with `[redacted]`.
 
 ## MCP clients
 
@@ -462,7 +417,7 @@ The test skips when `GTFS_MCP_STATIC` is unset. CI does not set it. `cargo test`
 cargo test --locked
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `src/` and `tests/`, checks that npm package versions match `Cargo.toml`, runs `cargo fmt`, clippy, and `cargo test --locked`, and runs `cargo publish --dry-run --locked`. A system `protoc` is not installed. Tag `vX.Y.Z` runs `.github/workflows/release.yml`, which publishes the crate, binaries, container image, and npm packages. Version numbers change only through `scripts/bump-version.sh`.
+GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `src/` and `tests/`, checks that npm package versions match `Cargo.toml`, runs `cargo fmt`, clippy, and `cargo test --locked`, and runs `cargo publish --dry-run --locked`. A system `protoc` is not installed. Tag `vX.Y.Z` runs `.github/workflows/release.yml`, which publishes the crate, binaries, and npm packages. Version numbers change only through `scripts/bump-version.sh`.
 
 ## Layout
 
