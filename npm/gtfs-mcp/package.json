@@ -1,0 +1,28 @@
+{
+  "name": "gtfs-mcp",
+  "version": "0.2.0",
+  "description": "MCP server for GTFS static schedules and optional GTFS-Realtime feeds",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sohampatwardhan/gtfs-mcp.git"
+  },
+  "homepage": "https://github.com/sohampatwardhan/gtfs-mcp#readme",
+  "bin": {
+    "gtfs-mcp": "bin/gtfs-mcp.js"
+  },
+  "files": [
+    "bin/gtfs-mcp.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@sohampatwardhan/gtfs-mcp-linux-x64": "0.2.0",
+    "@sohampatwardhan/gtfs-mcp-linux-arm64": "0.2.0",
+    "@sohampatwardhan/gtfs-mcp-darwin-x64": "0.2.0",
+    "@sohampatwardhan/gtfs-mcp-darwin-arm64": "0.2.0",
+    "@sohampatwardhan/gtfs-mcp-win32-x64": "0.2.0"
+  }
+}

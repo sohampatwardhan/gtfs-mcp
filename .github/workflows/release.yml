@@ -1,0 +1,319 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Tag matches Cargo.toml and npm versions
+        id: version
+        run: |
+          bash scripts/check-versions.sh
+          version=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' Cargo.toml | head -n 1)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "minor=${version%.*}" >> "$GITHUB_OUTPUT"
+      - name: Reject hardcoded GTFS endpoints
+        run: bash .github/scripts/check-gtfs-urls.sh
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Check the npm launcher parses
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+      - name: cargo publish dry run
+        run: cargo publish --dry-run --locked
+
+  crates:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Skip when this version is already on crates.io
+        id: check
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          code=$(curl -sS -o /tmp/crate.json -w '%{http_code}' https://crates.io/api/v1/crates/gtfs-mcp || true)
+          published=false
+          if [[ "$code" == "200" ]]; then
+            if python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(open("/tmp/crate.json")); raise SystemExit(0 if any(x["num"]==v for x in d["versions"]) else 1)' "$version"; then
+              published=true
+            fi
+          fi
+          echo "published=${published}" >> "$GITHUB_OUTPUT"
+          echo "gtfs-mcp ${version} already published: ${published}"
+      # The token below is minted by OIDC for this job and revoked when the job ends.
+      # It is not a repository secret.
+      - name: Authenticate to crates.io
+        if: steps.check.outputs.published != 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish to crates.io
+        if: steps.check.outputs.published != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
+
+  binaries:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: bin-linux-x64
+            binary: gtfs-mcp
+            linker: musl-gcc
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact: bin-linux-arm64
+            binary: gtfs-mcp
+            linker: musl-gcc
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: bin-darwin-x64
+            binary: gtfs-mcp
+            linker: ""
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: bin-darwin-arm64
+            binary: gtfs-mcp
+            linker: ""
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: bin-win32-x64
+            binary: gtfs-mcp.exe
+            linker: ""
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: matrix.linker != ''
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: macOS x86_64 SDK
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+          echo "CFLAGS_x86_64_apple_darwin=-arch x86_64" >> "$GITHUB_ENV"
+      - name: Build musl
+        if: matrix.linker != ''
+        env:
+          CC: ${{ matrix.linker }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build
+        if: matrix.linker == ''
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package archive
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          cp "$src" "dist/${{ matrix.binary }}"
+          tar -C dist -czf "dist/gtfs-mcp-${{ matrix.target }}.tar.gz" "${{ matrix.binary }}"
+      - name: Package zip
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
+          Compress-Archive -Path "dist/${{ matrix.binary }}" -DestinationPath "dist/gtfs-mcp-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.binary }}
+            dist/gtfs-mcp-${{ matrix.target }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  github-release:
+    needs: [verify, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: artifacts
+      - name: Checksums and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/ \;
+          cp scripts/install.sh release/gtfs-mcp-installer.sh
+          cp scripts/install.ps1 release/gtfs-mcp-installer.ps1
+          chmod 755 release/gtfs-mcp-installer.sh
+          (
+            cd release
+            sha256sum gtfs-mcp-*.tar.gz gtfs-mcp-*.zip > sha256sums.txt
+          )
+          tag="v${VERSION}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "gtfs-mcp ${tag}" --notes "Prebuilt binaries, checksums, and installers for gtfs-mcp ${tag}. See CHANGELOG.md."
+          fi
+          existing=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for file in release/*; do
+            name=$(basename "$file")
+            if printf '%s\n' "$existing" | grep -Fxq "$name"; then
+              echo "release asset ${name} already exists"
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done
+
+  docker:
+    needs: verify
+    if: needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Skip when this image tag is already published
+        id: check
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          if docker buildx imagetools inspect "ghcr.io/sohampatwardhan/gtfs-mcp:v${version}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "ghcr.io/sohampatwardhan/gtfs-mcp:v${version} already exists"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  docker-build:
+    needs: [verify, docker]
+    if: needs.verify.result == 'success' && needs.docker.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            artifact: digest-amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            artifact: digest-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/sohampatwardhan/gtfs-mcp,push-by-digest=true,push=true
+      - name: Save digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  docker-manifest:
+    needs: [verify, docker, docker-build]
+    if: needs.verify.result == 'success' && needs.docker.outputs.skip != 'true' && needs.docker-build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-arch tags
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          MINOR: ${{ needs.verify.outputs.minor }}
+        run: |
+          set -euo pipefail
+          images=()
+          for digest in digests/*; do
+            images+=("ghcr.io/sohampatwardhan/gtfs-mcp@sha256:$(basename "$digest")")
+          done
+          docker buildx imagetools create \
+            -t "ghcr.io/sohampatwardhan/gtfs-mcp:v${VERSION}" \
+            -t "ghcr.io/sohampatwardhan/gtfs-mcp:${MINOR}" \
+            -t "ghcr.io/sohampatwardhan/gtfs-mcp:latest" \
+            "${images[@]}"
+
+  npm:
+    needs: [verify, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Publish npm packages that are not already published
+        run: bash scripts/publish-npm.sh artifacts

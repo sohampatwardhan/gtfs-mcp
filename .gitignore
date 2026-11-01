@@ -4,3 +4,5 @@
 .env
 *.log
 /out
+npm/*/gtfs-mcp
+npm/*/gtfs-mcp.exe

@@ -15,49 +15,49 @@ fn tool_json(result: &rmcp::model::CallToolResult) -> Value {
 }
 
 fn child(args: &[&str]) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gtfs-rt-mcp"));
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gtfs-mcp"));
     command
         .args(args)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default());
-    command.env("GTFS_RT_MCP_LOG", "error");
+    command.env("GTFS_MCP_LOG", "error");
     command
 }
 
-fn harbor_env(command: &mut tokio::process::Command, paths: &gtfs_rt_mcp::fixtures::HarborPaths) {
+fn harbor_env(command: &mut tokio::process::Command, paths: &gtfs_mcp::fixtures::HarborPaths) {
     command
-        .env("GTFS_RT_MCP_FEED_ID", "harbor")
-        .env("GTFS_RT_MCP_STATIC", paths.static_zip.display().to_string())
+        .env("GTFS_MCP_FEED_ID", "harbor")
+        .env("GTFS_MCP_STATIC", paths.static_zip.display().to_string())
         .env(
-            "GTFS_RT_MCP_TRIP_UPDATES",
+            "GTFS_MCP_TRIP_UPDATES",
             paths.trip_updates.display().to_string(),
         )
         .env(
-            "GTFS_RT_MCP_VEHICLE_POSITIONS",
+            "GTFS_MCP_VEHICLE_POSITIONS",
             paths.vehicle_positions.display().to_string(),
         )
-        .env("GTFS_RT_MCP_ALERTS", paths.alerts.display().to_string());
+        .env("GTFS_MCP_ALERTS", paths.alerts.display().to_string());
 }
 
 #[tokio::test]
 async fn env_registers_a_feed_without_register_feed() {
     let dir = std::env::temp_dir().join(format!(
-        "gtfs-rt-mcp-env-{}-{}",
+        "gtfs-mcp-env-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
+    let paths = gtfs_mcp::fixtures::materialize(&dir).unwrap();
     let secret = "env-only-header-value";
     let mut command = child(&["stdio"]);
     harbor_env(&mut command, &paths);
     command
-        .env("GTFS_RT_MCP_RT_TTL", "30")
-        .env("GTFS_RT_MCP_STATIC_TTL", "0")
+        .env("GTFS_MCP_RT_TTL", "30")
+        .env("GTFS_MCP_STATIC_TTL", "0")
         .env(
-            "GTFS_RT_MCP_HTTP_HEADERS",
+            "GTFS_MCP_HTTP_HEADERS",
             format!(r#"{{"x-demo":"{secret}"}}"#),
         );
     let client =
@@ -109,7 +109,7 @@ async fn missing_static_exits_nonzero() {
     let output = command.output().await.expect("spawn");
     assert!(!output.status.success(), "status {:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("GTFS_RT_MCP_STATIC"), "{stderr}");
+    assert!(stderr.contains("GTFS_MCP_STATIC"), "{stderr}");
     assert!(stderr.contains("https://example.com/gtfs.zip"), "{stderr}");
 }
 
@@ -118,18 +118,18 @@ async fn malformed_optional_values_exit_without_leaking_headers() {
     let secret = "header-secret-value";
     let mut command = child(&["stdio"]);
     command
-        .env("GTFS_RT_MCP_STATIC", "/tmp/gtfs.zip")
-        .env("GTFS_RT_MCP_RT_TTL", "soon")
+        .env("GTFS_MCP_STATIC", "/tmp/gtfs.zip")
+        .env("GTFS_MCP_RT_TTL", "soon")
         .env(
-            "GTFS_RT_MCP_HTTP_HEADERS",
+            "GTFS_MCP_HTTP_HEADERS",
             format!(r#"{{"Authorization":"Bearer {secret}""#),
         );
     let output = command.output().await.expect("spawn");
     assert!(!output.status.success(), "status {:?}", output.status);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("GTFS_RT_MCP_RT_TTL"), "{stderr}");
+    assert!(stderr.contains("GTFS_MCP_RT_TTL"), "{stderr}");
     assert!(stderr.contains("soon"), "{stderr}");
-    assert!(stderr.contains("GTFS_RT_MCP_HTTP_HEADERS"), "{stderr}");
+    assert!(stderr.contains("GTFS_MCP_HTTP_HEADERS"), "{stderr}");
     assert!(!stderr.contains(secret), "{stderr}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains(secret), "{stdout}");
@@ -138,18 +138,18 @@ async fn malformed_optional_values_exit_without_leaking_headers() {
 #[tokio::test]
 async fn unloadable_static_stays_up_and_register_feed_replaces_it() {
     let dir = std::env::temp_dir().join(format!(
-        "gtfs-rt-mcp-bad-file-{}-{}",
+        "gtfs-mcp-bad-file-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
+    let paths = gtfs_mcp::fixtures::materialize(&dir).unwrap();
     let mut command = child(&["stdio"]);
     command
-        .env("GTFS_RT_MCP_FEED_ID", "harbor")
-        .env("GTFS_RT_MCP_STATIC", "/no/such/gtfs-rt-mcp-static.zip");
+        .env("GTFS_MCP_FEED_ID", "harbor")
+        .env("GTFS_MCP_STATIC", "/no/such/gtfs-mcp-static.zip");
     let client =
         ().serve(TokioChildProcess::new(command).expect("spawn"))
             .await

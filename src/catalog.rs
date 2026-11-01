@@ -524,9 +524,8 @@ impl Catalog {
                 drop(failed);
                 drop(feeds);
                 if errors.is_empty() {
-                    Err(err("no feed registered").hint(
-                        "set GTFS_RT_MCP_STATIC in the MCP client env, or call register_feed",
-                    ))
+                    Err(err("no feed registered")
+                        .hint("set GTFS_MCP_STATIC in the MCP client env, or call register_feed"))
                 } else {
                     Err(err("feed configuration is invalid")
                         .hint("see config_errors")
@@ -1041,7 +1040,7 @@ mod tests {
 
     fn temp_dir(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "gtfs-rt-mcp-{label}-{}-{}",
+            "gtfs-mcp-{label}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1216,14 +1215,14 @@ mod tests {
         let catalog = Catalog::new().unwrap();
         catalog.add_config_errors(vec![json!({
             "error": "startup note",
-            "var": "GTFS_RT_MCP_STATIC"
+            "var": "GTFS_MCP_STATIC"
         })]);
         let mut headers = BTreeMap::new();
         headers.insert("x-api-key".into(), secret.into());
         catalog.note_load_failure(
             RegisterRequest {
-                feed_id: Some("amtrak".into()),
-                static_path: Some("/no/such/gtfs-rt-mcp-static.zip".into()),
+                feed_id: Some("extra".into()),
+                static_path: Some("/no/such/gtfs-mcp-static.zip".into()),
                 headers,
                 ..Default::default()
             },
@@ -1231,13 +1230,13 @@ mod tests {
         );
 
         let listed = catalog.list().to_string();
-        assert!(listed.contains("amtrak"), "{listed}");
+        assert!(listed.contains("extra"), "{listed}");
         assert!(listed.contains("\"ready\":false"), "{listed}");
         assert!(listed.contains("config_errors"), "{listed}");
         assert!(listed.contains("[redacted]"), "{listed}");
         assert!(!listed.contains(secret), "{listed}");
 
-        let health = catalog.health(Some("amtrak".into())).await.unwrap();
+        let health = catalog.health(Some("extra".into())).await.unwrap();
         let health_text = health.to_string();
         assert_eq!(health["ready"], false);
         assert_eq!(health["headers"][0], "x-api-key");
@@ -1245,7 +1244,7 @@ mod tests {
         assert!(!health_text.contains(secret), "{health_text}");
 
         let query_error = catalog
-            .trip_status(Some("amtrak".into()), "177", None, None, 6)
+            .trip_status(Some("extra".into()), "177", None, None, 6)
             .await
             .unwrap_err();
         assert!(
@@ -1255,17 +1254,17 @@ mod tests {
         );
         assert!(!query_error.error.contains(secret), "{}", query_error.error);
 
-        let refreshed = catalog.refresh(Some("amtrak".into())).await.unwrap_err();
+        let refreshed = catalog.refresh(Some("extra".into())).await.unwrap_err();
         assert!(!refreshed.error.contains(secret), "{}", refreshed.error);
         assert!(catalog.list().to_string().contains("\"ready\":false"));
 
         let dir = temp_dir("clear-failure");
         let paths = fixtures::materialize(&dir).unwrap();
         catalog
-            .register(harbor_request(&paths, "amtrak"))
+            .register(harbor_request(&paths, "extra"))
             .await
             .unwrap();
-        let health = catalog.health(Some("amtrak".into())).await.unwrap();
+        let health = catalog.health(Some("extra".into())).await.unwrap();
         assert_eq!(health["ready"], true);
         assert!(health.get("error").is_none(), "{health}");
         let _ = std::fs::remove_dir_all(dir);

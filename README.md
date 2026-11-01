@@ -1,8 +1,105 @@
-# gtfs-rt-mcp
+# gtfs-mcp
 
 MCP server that lets an agent read GTFS static schedules and GTFS-Realtime feeds. Register a feed, then ask where a vehicle is, how late it is, which track it was assigned, what the next departures are, and which alerts are active.
 
 It works with any agency. Startup takes one static GTFS zip (URL or path) and optional TripUpdates, VehiclePositions, and Alerts protobufs. `register_feed` can add more feeds after the process is running.
+
+gtfs-mcp is operator-agnostic: `src/` and `tests/` do not name an agency, embed a real feed endpoint or feed id, or special-case an auth flow. Examples use placeholders on reserved domains such as `example.com`, and CI rejects other GTFS URLs there.
+
+## Installation
+
+`GTFS_MCP_STATIC` is required before the server will stay up. The URLs below are placeholders on `example.com`.
+
+### cargo install
+
+Rust 1.88 or newer. A system `protoc` is not required; the build uses a vendored `protoc`.
+
+```bash
+cargo install gtfs-mcp --locked
+```
+
+### Prebuilt binaries
+
+GitHub Releases for tag `vX.Y.Z` ship linux x86_64 and aarch64 (musl), macOS x86_64 and aarch64, and Windows x86_64, plus `sha256sums.txt`.
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/sohampatwardhan/gtfs-mcp/releases/latest/download/gtfs-mcp-installer.sh | sh
+```
+
+```powershell
+irm https://github.com/sohampatwardhan/gtfs-mcp/releases/latest/download/gtfs-mcp-installer.ps1 | iex
+```
+
+The installers are `scripts/install.sh` and `scripts/install.ps1`. `GTFS_MCP_VERSION=0.2.0` selects a release. `PREFIX` sets the install directory (the default is `~/.local` on Unix and `%LOCALAPPDATA%\gtfs-mcp` on Windows).
+
+A Homebrew tap is not part of this release. It would need a separate tap repository and a token.
+
+### Docker
+
+The published image is multi-arch (`linux/amd64` and `linux/arm64`):
+
+```bash
+docker run --rm -p 8091:8091 \
+  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+  ghcr.io/sohampatwardhan/gtfs-mcp:latest
+```
+
+Tags are `vX.Y.Z` (for example `v0.2.0`), `X.Y` (for example `0.2`), and `latest`. MCP is at `http://127.0.0.1:8091/mcp`.
+
+### npx
+
+```bash
+npx -y gtfs-mcp --version
+```
+
+The `gtfs-mcp` package is a small launcher. npm installs one optional platform package (`@sohampatwardhan/gtfs-mcp-linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, or `win32-x64`) and the launcher runs that binary. Arguments, environment variables, and stdio are passed through.
+
+### MCP clients
+
+npx in Cursor, Claude Desktop, or Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "gtfs": {
+      "command": "npx",
+      "args": ["-y", "gtfs-mcp", "stdio"],
+      "env": {
+        "GTFS_MCP_FEED_ID": "harbor",
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
+      }
+    }
+  }
+}
+```
+
+Docker, with the feed variables on the container and the client pointed at the published port:
+
+```bash
+docker run --rm -p 8091:8091 \
+  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+  ghcr.io/sohampatwardhan/gtfs-mcp:latest
+```
+
+```json
+{
+  "mcpServers": {
+    "gtfs": {
+      "url": "http://127.0.0.1:8091/mcp"
+    }
+  }
+}
+```
 
 ## Why Rust
 
@@ -21,14 +118,14 @@ The same crate builds on linux/arm64 and macOS. Release builds use thin LTO, `op
 
 ```mermaid
 flowchart LR
-  Agent["MCP client"] -->|"stdio, or HTTP POST /mcp"| Server["gtfs-rt-mcp"]
+  Agent["MCP client"] -->|"stdio, or HTTP POST /mcp"| Server["gtfs-mcp"]
   Server --> Catalog["Catalog"]
   Catalog --> Static[("in-memory SQLite<br/>stops, routes, trips, stop_times")]
   Catalog --> Cache["decoded TripUpdates,<br/>VehiclePositions, Alerts"]
   Catalog -->|"refetch on TTL"| Agency["static zip and<br/>realtime protobuf URLs"]
 ```
 
-Static GTFS is parsed into SQLite. Direct agency URLs are mutable, so the static zip is fetched again when its TTL elapses (`GTFS_RT_MCP_STATIC_TTL`, default 6 hours, `0` disables the timer) and the realtime protobufs are fetched again when `GTFS_RT_MCP_RT_TTL` elapses (default 15 seconds). `refresh_feed` fetches them immediately. A failed refresh keeps the last good copy and records `last_error` on `feed_health`.
+Static GTFS is parsed into SQLite. Direct agency URLs are mutable, so the static zip is fetched again when its TTL elapses (`GTFS_MCP_STATIC_TTL`, default 6 hours, `0` disables the timer) and the realtime protobufs are fetched again when `GTFS_MCP_RT_TTL` elapses (default 15 seconds). `refresh_feed` fetches them immediately. A failed refresh keeps the last good copy and records `last_error` on `feed_health`.
 
 ## Build
 
@@ -38,106 +135,149 @@ Debian, Ubuntu, or Raspberry Pi OS:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential protobuf-compiler pkg-config
+sudo apt-get install -y build-essential pkg-config
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo build --release --locked
-./target/release/gtfs-rt-mcp --version
+./target/release/gtfs-mcp --version
 ```
 
 macOS:
 
 ```bash
-brew install protobuf
 cargo build --release --locked
 ```
 
-`protobuf-compiler` (`protoc`) is required at build time. The GTFS-Realtime schema is vendored in `proto/gtfs-realtime.proto` (Apache-2.0, from the MobilityData GTFS-Realtime spec). Nothing is downloaded during `cargo test`.
+`protoc` is not a system package. `build.rs` uses `protoc-bin-vendored`. The GTFS-Realtime schema is vendored in `proto/gtfs-realtime.proto` (Apache-2.0, from the MobilityData GTFS-Realtime spec).
 
 ## Breaking changes in 0.2.0
 
-Startup configuration is one feed, and `GTFS_RT_MCP_STATIC` (or `--static`) is required. These 0.1.0 options are gone:
+0.2.0 is not published yet. The project is renamed from `gtfs-rt-mcp` to `gtfs-mcp`, and environment variables use the `GTFS_MCP_` prefix. The old `GTFS_RT_MCP_*` names are not accepted.
 
-- `GTFS_RT_MCP_FEED_SET` and `--feed-set`
-- `GTFS_RT_MCP_FEED_<n>_*` numbered feeds
-- `GTFS_RT_MCP_FEEDS` JSON
+Startup configuration is one feed, and `GTFS_MCP_STATIC` (or `--static`) is required. These 0.1.0 options are gone:
+
+- `GTFS_MCP_FEED_SET` and `--feed-set`
+- `GTFS_MCP_FEED_<n>_*` numbered feeds
+- `GTFS_MCP_FEEDS` JSON
 - the `feed_set` field on `register_feed`
 
-If `GTFS_RT_MCP_STATIC` is missing or empty, the process exits with status 1. A malformed optional value (bad TTL, TTL out of range, or HTTP headers that are not a JSON object of strings) also exits with status 1 before the server listens. Header values are never written to that error. A static location that is set but cannot be read is reported on stderr and as a feed with `"ready": false`; the process still starts so `register_feed` can replace it.
+If `GTFS_MCP_STATIC` is missing or empty, the process exits with status 1. A malformed optional value (bad TTL, TTL out of range, or HTTP headers that are not a JSON object of strings) also exits with status 1 before the server listens. Header values are never written to that error. A static location that is set but cannot be read is reported on stderr and as a feed with `"ready": false`; the process still starts so `register_feed` can replace it.
 
 ## Run
 
 Logs go to stderr. stdio mode must not print on stdout. The usual way to configure the feed is the `env` block of an MCP client (see below). The same variables work in a shell. The URLs below are placeholders on the reserved `example.com` domain.
 
 ```bash
-GTFS_RT_MCP_FEED_ID=harbor \
-GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip \
-GTFS_RT_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-GTFS_RT_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-GTFS_RT_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-GTFS_RT_MCP_HTTP_HEADERS='{"Authorization":"Bearer replace-me"}' \
-gtfs-rt-mcp stdio
+GTFS_MCP_FEED_ID=harbor \
+GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+GTFS_MCP_HTTP_HEADERS='{"Authorization":"Bearer replace-me"}' \
+gtfs-mcp stdio
 
 # The same fields as flags. A flag overrides the matching variable.
-gtfs-rt-mcp --feed-id harbor --static https://example.com/gtfs.zip stdio
+gtfs-mcp --feed-id harbor --static https://example.com/gtfs.zip stdio
 
 # Streamable HTTP on 127.0.0.1:8091, MCP at /mcp, liveness at /healthz.
-GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip gtfs-rt-mcp http
+GTFS_MCP_STATIC=https://example.com/gtfs.zip gtfs-mcp http
 ```
 
 There are no built-in credentials. Header values are sent on fetch and are never written to logs or tool results. `feed_health` and `list_feeds` return header names only.
 
-HTTP accepts `Host: localhost`, `127.0.0.1`, and `::1` by default. Add `--allowed-host your-pi.local` when a non-loopback client connects. `GTFS_RT_MCP_BIND` sets the listen address (default `127.0.0.1:8091`). `GTFS_RT_MCP_ALLOWED_HOST` may be repeated. `GTFS_RT_MCP_LOG` or `RUST_LOG` sets the stderr tracing filter.
+HTTP accepts `Host: localhost`, `127.0.0.1`, and `::1` by default. Add `--allowed-host your-pi.local` when a non-loopback client connects. `GTFS_MCP_BIND` sets the listen address (default `127.0.0.1:8091`). `GTFS_MCP_ALLOWED_HOST` may be repeated. `GTFS_MCP_LOG` or `RUST_LOG` sets the stderr tracing filter.
 
 ## Configuration
 
 Empty values are ignored. `http://` and `https://` are URLs; anything else is a filesystem path. `--feed-id`, `--static`, `--trip-updates`, `--vehicle-positions`, `--alerts`, `--rt-ttl`, `--static-ttl`, and `--http-headers` override the matching variable.
 
-The feed variables come first. `GTFS_RT_MCP_STATIC` is required.
+The feed variables come first. `GTFS_MCP_STATIC` is required.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `GTFS_RT_MCP_STATIC` | yes | GTFS static zip URL or path. |
-| `GTFS_RT_MCP_TRIP_UPDATES` | no | TripUpdates protobuf URL or path. |
-| `GTFS_RT_MCP_VEHICLE_POSITIONS` | no | VehiclePositions protobuf URL or path. |
-| `GTFS_RT_MCP_ALERTS` | no | Alerts protobuf URL or path. |
+| `GTFS_MCP_STATIC` | yes | GTFS static zip URL or path. |
+| `GTFS_MCP_TRIP_UPDATES` | no | TripUpdates protobuf URL or path. |
+| `GTFS_MCP_VEHICLE_POSITIONS` | no | VehiclePositions protobuf URL or path. |
+| `GTFS_MCP_ALERTS` | no | Alerts protobuf URL or path. |
 
 Optional extras and server settings:
 
 | Variable | Meaning |
 | --- | --- |
-| `GTFS_RT_MCP_HTTP_HEADERS` | JSON object of header name to string value, for example `{"x-api-key":"replace-me"}`. Values are never logged or echoed. |
-| `GTFS_RT_MCP_FEED_ID` | Feed id. Default `default`. Letters, numbers, and `_` `.` `:` `-`, 1–64 characters. |
-| `GTFS_RT_MCP_RT_TTL` | Realtime TTL in seconds. Integer 1–3600. Default 15. |
-| `GTFS_RT_MCP_STATIC_TTL` | Static-zip TTL in seconds. `0` disables the timer. Max 604800. Default 21600. |
-| `GTFS_RT_MCP_BIND` | HTTP listen address. Default `127.0.0.1:8091`. |
-| `GTFS_RT_MCP_ALLOWED_HOST` | Extra `Host` header to allow. May be repeated. |
-| `GTFS_RT_MCP_LOG` or `RUST_LOG` | stderr tracing filter. |
+| `GTFS_MCP_HTTP_HEADERS` | JSON object of header name to string value, for example `{"x-api-key":"replace-me"}`. Values are never logged or echoed. |
+| `GTFS_MCP_FEED_ID` | Feed id. Default `default`. Letters, numbers, and `_` `.` `:` `-`, 1–64 characters. |
+| `GTFS_MCP_RT_TTL` | Realtime TTL in seconds. Integer 1–3600. Default 15. |
+| `GTFS_MCP_STATIC_TTL` | Static-zip TTL in seconds. `0` disables the timer. Max 604800. Default 21600. |
+| `GTFS_MCP_BIND` | HTTP listen address. Default `127.0.0.1:8091`. |
+| `GTFS_MCP_ALLOWED_HOST` | Extra `Host` header to allow. May be repeated. |
+| `GTFS_MCP_LOG` or `RUST_LOG` | stderr tracing filter. |
 
-Missing or empty `GTFS_RT_MCP_STATIC` exits with status 1 and names the variable, for example:
+Missing or empty `GTFS_MCP_STATIC` exits with status 1 and names the variable, for example:
 
 ```text
-gtfs-rt-mcp: GTFS_RT_MCP_STATIC is required (or pass --static). Example: GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip
+gtfs-mcp: GTFS_MCP_STATIC is required (or pass --static). Example: GTFS_MCP_STATIC=https://example.com/gtfs.zip
 ```
 
-Malformed optional values also exit with status 1 before the server listens. That includes a TTL that is not an integer, a TTL outside the range above, a feed id with characters outside the set above, and `GTFS_RT_MCP_HTTP_HEADERS` that is not a JSON object of strings. The error names the variable. Header values are not included. A static zip or protobuf that is configured but fails to download does not exit: the feed is listed with `"ready": false`, and `register_feed` or `refresh_feed` can try again.
+Malformed optional values also exit with status 1 before the server listens. That includes a TTL that is not an integer, a TTL outside the range above, a feed id with characters outside the set above, and `GTFS_MCP_HTTP_HEADERS` that is not a JSON object of strings. The error names the variable. Header values are not included. A static zip or protobuf that is configured but fails to download does not exit: the feed is listed with `"ready": false`, and `register_feed` or `refresh_feed` can try again.
 
 Startup registers one feed. `register_feed` can add further feeds at runtime, up to 16 total.
 
-## Docker
+## Authentication
 
-The image is multi-arch. Buildx builds each platform natively (or under QEMU) from the same Dockerfile, so a Raspberry Pi and an amd64 host produce their own binaries.
+The server does not log in. It never exchanges a username and password for a token. What it can do today is send extra HTTP headers, or GET a URL that already contains a query string.
+
+Open feeds need nothing. Leave `GTFS_MCP_HTTP_HEADERS` unset and use the feed URLs as published.
+
+Feeds that expect an API key in a header use one JSON object of header name to string value. The name and value below are placeholders.
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t gtfs-rt-mcp .
-docker run --rm -p 8091:8091 \
-  -e GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip \
-  -e GTFS_RT_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-  -e GTFS_RT_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-  -e GTFS_RT_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-  gtfs-rt-mcp
+GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+GTFS_MCP_HTTP_HEADERS='{"x-api-key":"replace-me"}' \
+gtfs-mcp stdio
 ```
 
-The runtime image is `debian:bookworm-slim` plus CA certificates, running as uid 10001. The process listens on `0.0.0.0:8091` inside the container. From the host, `http://127.0.0.1:8091/mcp` matches the default allowed hosts. `docker run --rm --entrypoint gtfs-rt-mcp gtfs-rt-mcp:0.2.0 --version` prints `gtfs-rt-mcp 0.2.0`. The 0.1.0 release binary on the machine that built it was 9,843,096 bytes (9.4 MB), stripped, dynamically linked to glibc, and the unpacked amd64 image used 140 MB of disk.
+The same object in an MCP client `env` block is a JSON string:
+
+```json
+"GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
+```
+
+`--http-headers` overrides that variable for the startup feed. Docker passes it as an environment variable:
+
+```bash
+docker run --rm -p 8091:8091 \
+  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+  -e GTFS_MCP_HTTP_HEADERS='{"x-api-key":"replace-me"}' \
+  ghcr.io/sohampatwardhan/gtfs-mcp:latest
+```
+
+That header map belongs to the one startup feed. Every HTTP download for that feed sends it: the static zip and each realtime protobuf that is configured. Filesystem paths ignore it. The same map is sent again when a TTL refresh or `refresh_feed` downloads those URLs. One feed cannot use a different header map per URL.
+
+`register_feed` does not read `GTFS_MCP_HTTP_HEADERS`. Pass `headers` on that call. Those headers are stored on that `feed_id` only, and they replace any headers already stored if the same id is registered again. Omitting `headers` stores an empty map. `decode_protobuf` takes its own `headers` for that single URL and does not register them.
+
+A feed that expects the key in the query string is just a URL. Put the placeholder in the URL you already pass:
+
+```text
+https://example.com/gtfs.zip?api_key=replace-me
+```
+
+The server GETs that string as given. It does not strip the query. The full URL, including the query, is returned in `feed_health` and `list_feeds` under `source`, and a failed download prints `GET <url>` on stderr. Prefer a header when the publisher allows either form.
+
+Keep keys in the MCP client's env or secret store, or in the environment of the process that starts the container. Do not commit them. Header values are not written to logs or tool results. `feed_health` and `list_feeds` return header names only. If a startup load error would otherwise include a header value of 4 or more characters, that value is replaced with `[redacted]`.
+
+## Docker image
+
+Build the local image from the same Dockerfile the release workflow uses. That workflow publishes `ghcr.io/sohampatwardhan/gtfs-mcp` (see Installation). The runtime image is `debian:bookworm-slim` plus CA certificates, running as uid 10001. The process listens on `0.0.0.0:8091` inside the container. From the host, `http://127.0.0.1:8091/mcp` matches the default allowed hosts.
+
+```bash
+docker build -t gtfs-mcp .
+docker run --rm -p 8091:8091 \
+  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+  gtfs-mcp
+```
 
 ## MCP clients
 
@@ -149,14 +289,14 @@ Cursor `.cursor/mcp.json`:
 {
   "mcpServers": {
     "gtfs-rt": {
-      "command": "gtfs-rt-mcp",
+      "command": "gtfs-mcp",
       "args": ["stdio"],
       "env": {
-        "GTFS_RT_MCP_FEED_ID": "harbor",
-        "GTFS_RT_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_RT_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_RT_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_RT_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
+        "GTFS_MCP_FEED_ID": "harbor",
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
       }
     }
   }
@@ -169,15 +309,15 @@ Claude Desktop `claude_desktop_config.json`:
 {
   "mcpServers": {
     "gtfs-rt": {
-      "command": "gtfs-rt-mcp",
+      "command": "gtfs-mcp",
       "args": ["stdio"],
       "env": {
-        "GTFS_RT_MCP_FEED_ID": "harbor",
-        "GTFS_RT_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_RT_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_RT_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_RT_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
-        "GTFS_RT_MCP_HTTP_HEADERS": "{\"Authorization\":\"Bearer replace-me\"}"
+        "GTFS_MCP_FEED_ID": "harbor",
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
+        "GTFS_MCP_HTTP_HEADERS": "{\"Authorization\":\"Bearer replace-me\"}"
       }
     }
   }
@@ -190,14 +330,14 @@ Claude Code `.mcp.json`:
 {
   "mcpServers": {
     "gtfs-rt": {
-      "command": "gtfs-rt-mcp",
+      "command": "gtfs-mcp",
       "args": ["stdio"],
       "env": {
-        "GTFS_RT_MCP_FEED_ID": "harbor",
-        "GTFS_RT_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_RT_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_RT_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_RT_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
+        "GTFS_MCP_FEED_ID": "harbor",
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
       }
     }
   }
@@ -206,7 +346,7 @@ Claude Code `.mcp.json`:
 
 The same `mcpServers` object works in any of the three files. Further feeds are added at runtime with `register_feed`, not with extra environment variables.
 
-Cursor streamable HTTP (start `gtfs-rt-mcp http` first, with `GTFS_RT_MCP_STATIC` set in that process):
+Cursor streamable HTTP (start `gtfs-mcp http` first, with `GTFS_MCP_STATIC` set in that process):
 
 ```json
 {
@@ -218,7 +358,7 @@ Cursor streamable HTTP (start `gtfs-rt-mcp http` first, with `GTFS_RT_MCP_STATIC
 }
 ```
 
-The server name is `gtfs-rt-mcp`. Instructions on `initialize` tell the model to call `list_feeds` first. Responses are compact JSON. Page with `offset` until `next_offset` is null.
+The server name is `gtfs-mcp`. Instructions on `initialize` tell the model to call `list_feeds` first. Responses are compact JSON. Page with `offset` until `next_offset` is null.
 
 ## Tools
 
@@ -292,7 +432,7 @@ The checked-in Harbor Line fixture is a small static zip plus three protobufs, w
 
 ## Example: a large agency feed
 
-A previous run pointed `GTFS_RT_MCP_STATIC` and the three realtime variables at a large public agency (no API key). The static feed was Fall 2026 (`10,292` stops, `3,104,937` stop times, `117,449` trips) in `America/New_York`. At fetch time the vehicle feed had 349 entities and was 1 second old; trip updates had 1,184 entities.
+A previous run pointed `GTFS_MCP_STATIC` and the three realtime variables at a large public agency (no API key). The static feed was Fall 2026 (`10,292` stops, `3,104,937` stop times, `117,449` trips) in `America/New_York`. At fetch time the vehicle feed had 349 entities and was 1 second old; trip updates had 1,184 entities.
 
 `search_stops` for `South Station` ranked the station `place-sstat` first.
 
@@ -305,14 +445,14 @@ A previous run pointed `GTFS_RT_MCP_STATIC` and the three realtime variables at 
 Re-run that kind of check locally by substituting the agency's URLs (the values below are placeholders):
 
 ```bash
-GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip \
-GTFS_RT_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-GTFS_RT_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-GTFS_RT_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-cargo test --test live_mbta -- --nocapture
+GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+cargo test --test live_feed -- --nocapture
 ```
 
-The test skips when `GTFS_RT_MCP_STATIC` is unset. CI does not set it. `cargo test` otherwise uses the Harbor fixture and loopback HTTP only.
+The test skips when `GTFS_MCP_STATIC` is unset. CI does not set it. `cargo test` otherwise uses the Harbor fixture and loopback HTTP only.
 
 ## Tests and CI
 
@@ -320,7 +460,7 @@ The test skips when `GTFS_RT_MCP_STATIC` is unset. CI does not set it. `cargo te
 cargo test --locked
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) installs `protoc`, rejects non-reserved GTFS URLs in `src/` and `tests/`, runs `cargo test --locked`, and builds the release binary. No network is required for the default tests.
+GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `src/` and `tests/`, checks that npm package versions match `Cargo.toml`, runs `cargo fmt`, clippy, and `cargo test --locked`, and runs `cargo publish --dry-run --locked`. A system `protoc` is not installed. Tag `vX.Y.Z` runs `.github/workflows/release.yml`, which publishes the crate, binaries, container image, and npm packages. Version numbers change only through `scripts/bump-version.sh`.
 
 ## Layout
 
@@ -334,3 +474,6 @@ GitHub Actions (`.github/workflows/ci.yml`) installs `protoc`, rejects non-reser
 - `tests/fixtures/harbor/` — tiny GTFS text files
 - `proto/gtfs-realtime.proto` — vendored spec, Apache-2.0
 - `.github/scripts/check-gtfs-urls.sh` — fails CI on a hardcoded GTFS endpoint
+- `.github/workflows/release.yml` — tag-triggered publish
+- `scripts/bump-version.sh` — bumps `Cargo.toml` and the npm packages, then commits and tags
+- `npm/` — `npx` launcher and platform package manifests

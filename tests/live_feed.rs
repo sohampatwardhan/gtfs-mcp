@@ -1,15 +1,15 @@
 //! Opt-in check against a live GTFS static zip and GTFS-Realtime protobufs.
 //!
-//! Skips unless `GTFS_RT_MCP_STATIC` is set. Optional realtime URLs use the same
-//! names as the server: `GTFS_RT_MCP_TRIP_UPDATES`, `GTFS_RT_MCP_VEHICLE_POSITIONS`,
-//! and `GTFS_RT_MCP_ALERTS`.
+//! Skips unless `GTFS_MCP_STATIC` is set. Optional realtime URLs use the same
+//! names as the server: `GTFS_MCP_TRIP_UPDATES`, `GTFS_MCP_VEHICLE_POSITIONS`,
+//! and `GTFS_MCP_ALERTS`.
 //!
 //! ```text
-//! GTFS_RT_MCP_STATIC=https://example.com/gtfs.zip \
-//! GTFS_RT_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
-//! GTFS_RT_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
-//! GTFS_RT_MCP_ALERTS=https://example.com/realtime/alerts.pb \
-//! cargo test --test live_mbta -- --nocapture
+//! GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+//! GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+//! GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+//! GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+//! cargo test --test live_feed -- --nocapture
 //! ```
 
 use serde_json::Value;
@@ -23,17 +23,17 @@ fn env_url(name: &str) -> Option<String> {
 
 #[tokio::test]
 async fn live_feed_from_env() {
-    let Some(static_url) = env_url("GTFS_RT_MCP_STATIC") else {
-        eprintln!("skipping live feed test: GTFS_RT_MCP_STATIC is unset");
+    let Some(static_url) = env_url("GTFS_MCP_STATIC") else {
+        eprintln!("skipping live feed test: GTFS_MCP_STATIC is unset");
         return;
     };
-    let trip_updates_url = env_url("GTFS_RT_MCP_TRIP_UPDATES");
-    let vehicle_positions_url = env_url("GTFS_RT_MCP_VEHICLE_POSITIONS");
-    let alerts_url = env_url("GTFS_RT_MCP_ALERTS");
+    let trip_updates_url = env_url("GTFS_MCP_TRIP_UPDATES");
+    let vehicle_positions_url = env_url("GTFS_MCP_VEHICLE_POSITIONS");
+    let alerts_url = env_url("GTFS_MCP_ALERTS");
 
-    let catalog = std::sync::Arc::new(gtfs_rt_mcp::Catalog::new().unwrap());
+    let catalog = std::sync::Arc::new(gtfs_mcp::Catalog::new().unwrap());
     let health = catalog
-        .register(gtfs_rt_mcp::RegisterRequest {
+        .register(gtfs_mcp::RegisterRequest {
             feed_id: Some("live".into()),
             static_url: Some(static_url),
             trip_updates_url: trip_updates_url.clone(),
@@ -79,7 +79,7 @@ async fn live_feed_from_env() {
     let vehicles = catalog
         .vehicles(
             Some("live".into()),
-            gtfs_rt_mcp::VehicleQuery {
+            gtfs_mcp::VehicleQuery {
                 route: None,
                 trip: None,
                 vehicle: None,
@@ -93,7 +93,7 @@ async fn live_feed_from_env() {
     let alerts = catalog
         .alerts(
             Some("live".into()),
-            gtfs_rt_mcp::AlertQuery {
+            gtfs_mcp::AlertQuery {
                 route: None,
                 stop: None,
                 text: None,

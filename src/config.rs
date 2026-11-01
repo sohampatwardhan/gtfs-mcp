@@ -43,24 +43,24 @@ pub fn startup_plan(
 
     let mut problems = Vec::new();
 
-    let static_gtfs = pick(&overrides.static_gtfs, vars.get("GTFS_RT_MCP_STATIC"));
+    let static_gtfs = pick(&overrides.static_gtfs, vars.get("GTFS_MCP_STATIC"));
     if static_gtfs.is_none() {
         problems.push(format!(
-            "GTFS_RT_MCP_STATIC is required (or pass --static). Example: GTFS_RT_MCP_STATIC={STATIC_EXAMPLE}"
+            "GTFS_MCP_STATIC is required (or pass --static). Example: GTFS_MCP_STATIC={STATIC_EXAMPLE}"
         ));
     }
 
-    let feed_id = pick(&overrides.feed_id, vars.get("GTFS_RT_MCP_FEED_ID"));
+    let feed_id = pick(&overrides.feed_id, vars.get("GTFS_MCP_FEED_ID"));
     if let Some(id) = feed_id.as_deref() {
         if let Err(error) = normalize_id(Some(id)) {
-            problems.push(format!("GTFS_RT_MCP_FEED_ID: {}", error.error));
+            problems.push(format!("GTFS_MCP_FEED_ID: {}", error.error));
         }
     }
 
     let rt_ttl_secs = match ttl_from(
         overrides.rt_ttl_secs,
-        vars.get("GTFS_RT_MCP_RT_TTL"),
-        "GTFS_RT_MCP_RT_TTL",
+        vars.get("GTFS_MCP_RT_TTL"),
+        "GTFS_MCP_RT_TTL",
         1,
         3600,
     ) {
@@ -72,8 +72,8 @@ pub fn startup_plan(
     };
     let static_ttl_secs = match ttl_from(
         overrides.static_ttl_secs,
-        vars.get("GTFS_RT_MCP_STATIC_TTL"),
-        "GTFS_RT_MCP_STATIC_TTL",
+        vars.get("GTFS_MCP_STATIC_TTL"),
+        "GTFS_MCP_STATIC_TTL",
         0,
         7 * 24 * 3600,
     ) {
@@ -86,7 +86,7 @@ pub fn startup_plan(
 
     let headers_raw = match &overrides.http_headers {
         Some(value) => Some(value.clone()),
-        None => vars.get("GTFS_RT_MCP_HTTP_HEADERS").cloned(),
+        None => vars.get("GTFS_MCP_HTTP_HEADERS").cloned(),
     };
     let headers = match headers_raw.as_deref() {
         Some(raw) => match parse_headers(raw) {
@@ -99,7 +99,7 @@ pub fn startup_plan(
         None => BTreeMap::new(),
     };
     if let Err(error) = validate_headers(&headers) {
-        problems.push(format!("GTFS_RT_MCP_HTTP_HEADERS: {}", error.error));
+        problems.push(format!("GTFS_MCP_HTTP_HEADERS: {}", error.error));
     }
 
     if !problems.is_empty() {
@@ -111,14 +111,13 @@ pub fn startup_plan(
     let (static_url, static_path) = split_loc(static_gtfs);
     let (trip_updates_url, trip_updates_path) = split_loc(pick(
         &overrides.trip_updates,
-        vars.get("GTFS_RT_MCP_TRIP_UPDATES"),
+        vars.get("GTFS_MCP_TRIP_UPDATES"),
     ));
     let (vehicle_positions_url, vehicle_positions_path) = split_loc(pick(
         &overrides.vehicle_positions,
-        vars.get("GTFS_RT_MCP_VEHICLE_POSITIONS"),
+        vars.get("GTFS_MCP_VEHICLE_POSITIONS"),
     ));
-    let (alerts_url, alerts_path) =
-        split_loc(pick(&overrides.alerts, vars.get("GTFS_RT_MCP_ALERTS")));
+    let (alerts_url, alerts_path) = split_loc(pick(&overrides.alerts, vars.get("GTFS_MCP_ALERTS")));
     let request = RegisterRequest {
         feed_id: feed_id.clone(),
         static_url,
@@ -193,15 +192,15 @@ fn ttl_from(
 
 fn parse_headers(raw: &str) -> Result<BTreeMap<String, String>, String> {
     let value: Value = serde_json::from_str(raw)
-        .map_err(|_| "GTFS_RT_MCP_HTTP_HEADERS is not a JSON object of strings".to_string())?;
+        .map_err(|_| "GTFS_MCP_HTTP_HEADERS is not a JSON object of strings".to_string())?;
     let Some(object) = value.as_object() else {
-        return Err("GTFS_RT_MCP_HTTP_HEADERS is not a JSON object of strings".into());
+        return Err("GTFS_MCP_HTTP_HEADERS is not a JSON object of strings".into());
     };
     let mut headers = BTreeMap::new();
     for (name, item) in object {
         let Some(text) = item.as_str() else {
             return Err(format!(
-                "GTFS_RT_MCP_HTTP_HEADERS value for '{name}' must be a string"
+                "GTFS_MCP_HTTP_HEADERS value for '{name}' must be a string"
             ));
         };
         headers.insert(name.clone(), text.to_string());
@@ -236,24 +235,21 @@ mod tests {
     fn configured_feed_stores_headers_and_ttls() {
         let secret = "super-secret-feed-token";
         let request = plan(&[
-            ("GTFS_RT_MCP_FEED_ID", "harbor"),
-            ("GTFS_RT_MCP_STATIC", "https://example.com/gtfs.zip"),
+            ("GTFS_MCP_FEED_ID", "harbor"),
+            ("GTFS_MCP_STATIC", "https://example.com/gtfs.zip"),
             (
-                "GTFS_RT_MCP_TRIP_UPDATES",
+                "GTFS_MCP_TRIP_UPDATES",
                 "https://example.com/realtime/trip-updates.pb",
             ),
             (
-                "GTFS_RT_MCP_VEHICLE_POSITIONS",
+                "GTFS_MCP_VEHICLE_POSITIONS",
                 "https://example.com/realtime/vehicle-positions.pb",
             ),
+            ("GTFS_MCP_ALERTS", "https://example.com/realtime/alerts.pb"),
+            ("GTFS_MCP_RT_TTL", "20"),
+            ("GTFS_MCP_STATIC_TTL", "0"),
             (
-                "GTFS_RT_MCP_ALERTS",
-                "https://example.com/realtime/alerts.pb",
-            ),
-            ("GTFS_RT_MCP_RT_TTL", "20"),
-            ("GTFS_RT_MCP_STATIC_TTL", "0"),
-            (
-                "GTFS_RT_MCP_HTTP_HEADERS",
+                "GTFS_MCP_HTTP_HEADERS",
                 &format!(r#"{{"Authorization":"Bearer {secret}"}}"#),
             ),
         ])
@@ -281,7 +277,7 @@ mod tests {
     fn missing_static_names_the_variable_and_an_example() {
         let error = plan(&[]).unwrap_err();
         assert!(
-            error.message.contains("GTFS_RT_MCP_STATIC"),
+            error.message.contains("GTFS_MCP_STATIC"),
             "{}",
             error.message
         );
@@ -290,9 +286,9 @@ mod tests {
             "{}",
             error.message
         );
-        let empty = plan(&[("GTFS_RT_MCP_STATIC", "   ")]).unwrap_err();
+        let empty = plan(&[("GTFS_MCP_STATIC", "   ")]).unwrap_err();
         assert!(
-            empty.message.contains("GTFS_RT_MCP_STATIC"),
+            empty.message.contains("GTFS_MCP_STATIC"),
             "{}",
             empty.message
         );
@@ -302,28 +298,28 @@ mod tests {
     fn malformed_optional_values_fail_without_the_secret() {
         let secret = "header-secret-value";
         let error = plan(&[
-            ("GTFS_RT_MCP_STATIC", "/tmp/gtfs.zip"),
-            ("GTFS_RT_MCP_RT_TTL", "soon"),
-            ("GTFS_RT_MCP_STATIC_TTL", "99999999"),
+            ("GTFS_MCP_STATIC", "/tmp/gtfs.zip"),
+            ("GTFS_MCP_RT_TTL", "soon"),
+            ("GTFS_MCP_STATIC_TTL", "99999999"),
             (
-                "GTFS_RT_MCP_HTTP_HEADERS",
+                "GTFS_MCP_HTTP_HEADERS",
                 &format!(r#"{{"x-api-key":"{secret}""#),
             ),
         ])
         .unwrap_err();
         assert!(
-            error.message.contains("GTFS_RT_MCP_RT_TTL"),
+            error.message.contains("GTFS_MCP_RT_TTL"),
             "{}",
             error.message
         );
         assert!(error.message.contains("soon"), "{}", error.message);
         assert!(
-            error.message.contains("GTFS_RT_MCP_STATIC_TTL"),
+            error.message.contains("GTFS_MCP_STATIC_TTL"),
             "{}",
             error.message
         );
         assert!(
-            error.message.contains("GTFS_RT_MCP_HTTP_HEADERS"),
+            error.message.contains("GTFS_MCP_HTTP_HEADERS"),
             "{}",
             error.message
         );
@@ -337,8 +333,8 @@ mod tests {
     #[test]
     fn header_object_must_be_strings() {
         let error = plan(&[
-            ("GTFS_RT_MCP_STATIC", "https://example.com/gtfs.zip"),
-            ("GTFS_RT_MCP_HTTP_HEADERS", r#"{"x-api-key":1}"#),
+            ("GTFS_MCP_STATIC", "https://example.com/gtfs.zip"),
+            ("GTFS_MCP_HTTP_HEADERS", r#"{"x-api-key":1}"#),
         ])
         .unwrap_err();
         assert!(
@@ -358,11 +354,11 @@ mod tests {
         let request = startup_plan(
             [
                 (
-                    "GTFS_RT_MCP_STATIC".into(),
+                    "GTFS_MCP_STATIC".into(),
                     "https://example.test/old.zip".into(),
                 ),
-                ("GTFS_RT_MCP_FEED_ID".into(), "old".into()),
-                ("GTFS_RT_MCP_RT_TTL".into(), "15".into()),
+                ("GTFS_MCP_FEED_ID".into(), "old".into()),
+                ("GTFS_MCP_RT_TTL".into(), "15".into()),
             ],
             &StartupOverrides {
                 static_gtfs: Some("https://example.com/gtfs.zip".into()),
@@ -384,7 +380,7 @@ mod tests {
     fn empty_flag_clears_the_environment_value() {
         let error = startup_plan(
             [(
-                "GTFS_RT_MCP_STATIC".into(),
+                "GTFS_MCP_STATIC".into(),
                 "https://example.com/gtfs.zip".into(),
             )],
             &StartupOverrides {
@@ -394,7 +390,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.message.contains("GTFS_RT_MCP_STATIC"),
+            error.message.contains("GTFS_MCP_STATIC"),
             "{}",
             error.message
         );
@@ -402,7 +398,7 @@ mod tests {
 
     #[test]
     fn omitted_feed_id_defaults_to_default() {
-        let request = plan(&[("GTFS_RT_MCP_STATIC", "/tmp/harbor/static.zip")]).unwrap();
+        let request = plan(&[("GTFS_MCP_STATIC", "/tmp/harbor/static.zip")]).unwrap();
         assert_eq!(request.feed_id.as_deref(), Some("default"));
         assert_eq!(
             request.static_path.as_deref(),
@@ -415,10 +411,10 @@ mod tests {
     #[test]
     fn filesystem_realtime_paths_stay_paths() {
         let request = plan(&[
-            ("GTFS_RT_MCP_STATIC", "/tmp/harbor/static.zip"),
-            ("GTFS_RT_MCP_TRIP_UPDATES", "/tmp/harbor/trip-updates.pb"),
+            ("GTFS_MCP_STATIC", "/tmp/harbor/static.zip"),
+            ("GTFS_MCP_TRIP_UPDATES", "/tmp/harbor/trip-updates.pb"),
             (
-                "GTFS_RT_MCP_VEHICLE_POSITIONS",
+                "GTFS_MCP_VEHICLE_POSITIONS",
                 "https://example.com/realtime/vehicle-positions.pb",
             ),
         ])

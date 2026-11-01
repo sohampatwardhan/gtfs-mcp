@@ -539,8 +539,8 @@ impl GtfsServer {
 
 #[tool_handler(
     router = self.tool_router,
-    name = "gtfs-rt-mcp",
-    instructions = "Explore GTFS static schedules and GTFS-Realtime for any agency. The startup feed comes from GTFS_RT_MCP_STATIC (required) and the optional GTFS_RT_MCP_TRIP_UPDATES, GTFS_RT_MCP_VEHICLE_POSITIONS, and GTFS_RT_MCP_ALERTS variables. Call list_feeds before register_feed. register_feed adds another static GTFS zip plus optional realtime protobuf URLs. A row with ready:false failed to load; refresh_feed retries it. Answer with trip_status (trip id or trip_short_name / train number), departure_board, trip_schedule, vehicle_positions, trip_updates, and alerts. Delays are seconds and positive means late. Track or platform assignments are assigned_stop_id and platform_code. Pass at_unix to pin the clock. Responses are compact JSON. Page with offset until next_offset is null. feed_health reports freshness. decode_protobuf turns a GTFS-Realtime message into JSON without registering a feed. HTTP header values are kept for fetches and are never echoed back."
+    name = "gtfs-mcp",
+    instructions = "Explore GTFS static schedules and GTFS-Realtime for any agency. The startup feed comes from GTFS_MCP_STATIC (required) and the optional GTFS_MCP_TRIP_UPDATES, GTFS_MCP_VEHICLE_POSITIONS, and GTFS_MCP_ALERTS variables. Call list_feeds before register_feed. register_feed adds another static GTFS zip plus optional realtime protobuf URLs. A row with ready:false failed to load; refresh_feed retries it. Answer with trip_status (trip id or trip_short_name / train number), departure_board, trip_schedule, vehicle_positions, trip_updates, and alerts. Delays are seconds and positive means late. Track or platform assignments are assigned_stop_id and platform_code. Pass at_unix to pin the clock. Responses are compact JSON. Page with offset until next_offset is null. feed_health reports freshness. decode_protobuf turns a GTFS-Realtime message into JSON without registering a feed. HTTP header values are kept for fetches and are never echoed back."
 )]
 impl ServerHandler for GtfsServer {}
 
@@ -567,7 +567,7 @@ pub async fn serve_http(
     let addr = listener
         .local_addr()
         .map_err(|e| err(format!("local address: {e}")))?;
-    tracing::info!("gtfs-rt-mcp listening on http://{addr}/mcp");
+    tracing::info!("gtfs-mcp listening on http://{addr}/mcp");
     let router = http_router(catalog, allowed_hosts);
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
