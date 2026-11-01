@@ -4,7 +4,7 @@ Notes for coding agents working in this repository. The server is MIT-licensed.
 
 ## Overview
 
-`gtfs-mcp` is an operator-agnostic MCP server for GTFS static schedules and optional GTFS-Realtime. The crate and binary are `gtfs-mcp`. The library crate is `gtfs_mcp`. Version `0.2.0` is unpublished. Logs go to stderr so they stay off the stdio JSON-RPC stream.
+`gtfs-mcp` is an operator-agnostic MCP server for GTFS static schedules and optional GTFS-Realtime. The crate and binary are `gtfs-mcp`. The library crate is `gtfs_mcp`. Logs go to stderr so they stay off the stdio JSON-RPC stream.
 
 `GTFS_MCP_STATIC` is required. `GTFS_MCP_TRIP_UPDATES`, `GTFS_MCP_VEHICLE_POSITIONS`, and `GTFS_MCP_ALERTS` are optional. The server does not exchange a username and password for a token. Credentials are extra HTTP headers or a query string already present on a feed URL. See the Authentication section of `README.md`.
 
@@ -27,7 +27,26 @@ bash .github/scripts/check-gtfs-urls.sh
 cargo publish --dry-run --locked
 ```
 
-Run those before a pull request. CI (`.github/workflows/ci.yml`) runs the same checks. Do not merge a red check. Agents never merge pull requests.
+```bash
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --locked
+```
+
+`cargo test --locked` also runs the doctests. Both must pass before a pull request. CI (`.github/workflows/ci.yml`) runs the same checks. Do not merge a red check. Agents never merge pull requests.
+
+## Rustdoc
+
+Every item in `src/` gets rustdoc, public and private: modules, structs, enums and variants, fields, traits, functions, methods, consts, type aliases, and macros. The vendored `gtfs_rt` module is generated from the protobuf schema and is the exception.
+
+Write a one-line summary, then the sections that apply:
+
+- `# Arguments` for each parameter
+- `# Returns`
+- `# Errors` for every error case on a `Result`
+- `# Panics` when the body can panic
+- `# Safety` for `unsafe`
+- `# Examples` as a doctest that compiles. Use `no_run` when the example would open a network connection. URLs in examples stay on `example.com` or another reserved domain.
+
+Link with intra-doc syntax (`[`Type`]`, `[`module::fn`]`). Public docs link only to public items. `#![deny(missing_docs)]` is on the library and the binary. Clippy warns on missing private docs, missing `# Errors`, and missing `# Panics`, and `cargo clippy -D warnings` rejects those warnings.
 
 ## Releasing
 

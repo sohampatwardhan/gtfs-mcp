@@ -1,4 +1,24 @@
-//! MCP tool surface. Responses are compact JSON text so agents spend tokens on facts.
+//! MCP tool router, plus stdio and streamable HTTP serving.
+//!
+//! [`GtfsServer`] answers GTFS schedule and realtime questions from a
+//! [`crate::Catalog`]. Each tool returns compact JSON text so an agent spends
+//! tokens on facts.
+//!
+//! [`GtfsServer::register_feed`], [`GtfsServer::list_feeds`],
+//! [`GtfsServer::unregister_feed`], [`GtfsServer::refresh_feed`], and
+//! [`GtfsServer::feed_health`] manage feeds. [`GtfsServer::search_stops`],
+//! [`GtfsServer::search_routes`], [`GtfsServer::trip_status`],
+//! [`GtfsServer::trip_schedule`], [`GtfsServer::departure_board`],
+//! [`GtfsServer::vehicle_positions`], [`GtfsServer::trip_updates`], and
+//! [`GtfsServer::alerts`] answer questions. [`GtfsServer::decode_protobuf`]
+//! turns one GTFS-Realtime message into JSON without registering a feed.
+//!
+//! [`serve_stdio`] speaks MCP on standard input and output. [`serve_http`]
+//! listens until Ctrl-C. [`spawn_http`] binds the same routes on a background
+//! task. HTTP serving mounts MCP at `/mcp` and answers `GET /healthz` with `ok`.
+//!
+//! Header values sent when fetching a feed are stored for later requests and are
+//! not copied into tool results.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -17,13 +37,28 @@ use crate::catalog::{Catalog, RegisterRequest};
 use crate::error::{err, AppError};
 use crate::query::{AlertQuery, TripUpdateQuery, VehicleQuery};
 
+/// MCP server that answers GTFS tools from one [`crate::Catalog`].
+///
+/// Build one with [`GtfsServer::new`] and run it through [`serve_stdio`],
+/// [`serve_http`], or [`spawn_http`]. Responses are compact JSON text.
 #[derive(Clone)]
 pub struct GtfsServer {
+    /// Shared feed catalog the tools read and update.
     catalog: Arc<Catalog>,
+    /// Router that dispatches the GTFS tools.
     tool_router: ToolRouter<Self>,
 }
 
 impl GtfsServer {
+    /// Builds a server that answers tools from `catalog`.
+    ///
+    /// # Arguments
+    ///
+    /// * `catalog` - Shared [`crate::Catalog`]. The server keeps a clone of the `Arc`.
+    ///
+    /// # Returns
+    ///
+    /// A [`GtfsServer`] with the GTFS tool router installed.
     pub fn new(catalog: Arc<Catalog>) -> Self {
         Self {
             catalog,
@@ -32,6 +67,7 @@ impl GtfsServer {
     }
 }
 
+/// Sources, cache intervals, and headers for [`GtfsServer::register_feed`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RegisterArgs {
     /// Stable id, 1-64 characters [A-Za-z0-9_.:-]. Defaults to "default".
@@ -72,6 +108,7 @@ struct RegisterArgs {
     headers: Option<BTreeMap<String, String>>,
 }
 
+/// Feed selector for tools that act on one registered feed.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct FeedIdArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -79,6 +116,7 @@ struct FeedIdArgs {
     feed_id: Option<String>,
 }
 
+/// Feed, text query, and page window for stop and route search.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SearchArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -95,6 +133,7 @@ struct SearchArgs {
     offset: Option<u32>,
 }
 
+/// Trip, optional stop, clock, and upcoming-stop limit for [`GtfsServer::trip_status`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TripStatusArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -113,6 +152,7 @@ struct TripStatusArgs {
     upcoming_limit: Option<u32>,
 }
 
+/// Trip, clock, and page window for [`GtfsServer::trip_schedule`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ScheduleArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -131,6 +171,7 @@ struct ScheduleArgs {
     offset: Option<u32>,
 }
 
+/// Station, route filter, time window, and page window for [`GtfsServer::departure_board`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct BoardArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -161,6 +202,7 @@ struct BoardArgs {
     include_skipped: Option<bool>,
 }
 
+/// Filters and page window for [`GtfsServer::vehicle_positions`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct VehicleArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -186,6 +228,7 @@ struct VehicleArgs {
     offset: Option<u32>,
 }
 
+/// Filters, page window, and per-trip stop cap for [`GtfsServer::trip_updates`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TripUpdateArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -211,6 +254,7 @@ struct TripUpdateArgs {
     stop_limit: Option<u32>,
 }
 
+/// Route, stop, text, and activity filters for [`GtfsServer::alerts`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AlertArgs {
     /// Feed id. Omit when only one feed is registered.
@@ -242,6 +286,7 @@ struct AlertArgs {
     max_chars: Option<u32>,
 }
 
+/// One protobuf source, plus page and text limits, for [`GtfsServer::decode_protobuf`].
 #[derive(Debug, Deserialize, JsonSchema)]
 struct DecodeArgs {
     /// Filesystem path of a GTFS-Realtime protobuf. Pass exactly one of path, url, or base64.
@@ -269,6 +314,33 @@ struct DecodeArgs {
 
 #[tool_router]
 impl GtfsServer {
+    /// Registers a static GTFS zip and optional realtime protobufs.
+    ///
+    /// Pass `static_url` or `static_path`, plus optional TripUpdates,
+    /// VehiclePositions, and Alerts URLs or files. An existing feed with the same id
+    /// is replaced, including one that failed to load from the environment. The
+    /// success body is that feed's health. Header values are stored and are not
+    /// echoed.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Id, sources, TTLs, and headers. See [`RegisterArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON health for the registered feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when:
+    ///
+    /// * `feed_id` is outside 1-64 characters of ASCII letters, digits, `_`, `.`, `:`, or `-`
+    /// * the static URL and path are both set, or neither is set
+    /// * a realtime source sets both a URL and a path
+    /// * a source uses an unsupported URL scheme
+    /// * a header name is empty, contains CR, LF, or `:`, or a value contains CR or LF
+    /// * the id is new and 16 feeds are already registered
+    /// * a static zip or realtime protobuf cannot be fetched or parsed
     #[tool(
         description = "Register another GTFS source at runtime. Pass static_url or static_path, plus optional realtime URLs. Replaces an existing feed with the same feed_id, including one that failed to load from the environment. Returns feed health. Header values are stored and not echoed."
     )]
@@ -293,6 +365,18 @@ impl GtfsServer {
         finish(self.catalog.register(request).await)
     }
 
+    /// Lists the startup feed and feeds added with [`GtfsServer::register_feed`].
+    ///
+    /// A feed that failed to load has `ready` set to false and an error string.
+    /// Header values are omitted. Rows are sorted by feed id.
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON object whose `feeds` array is the catalog listing.
+    ///
+    /// # Errors
+    ///
+    /// Does not return `Err`. The `Result` matches the other tools.
     #[tool(
         description = "List the startup feed and feeds added with register_feed. A feed that failed to load has ready:false and an error. Header values are omitted."
     )]
@@ -300,6 +384,23 @@ impl GtfsServer {
         Ok(compact(&self.catalog.list()))
     }
 
+    /// Drops a registered feed and its caches.
+    ///
+    /// Removes a loaded feed or one that failed to load.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Feed id. Omit it when only one feed is registered. See [`FeedIdArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON naming the removed feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when no feed has that
+    /// id, when no feed is registered, or when several feeds are registered and
+    /// `feed_id` is omitted.
     #[tool(description = "Drop a registered feed and its caches.")]
     async fn unregister_feed(
         &self,
@@ -308,6 +409,25 @@ impl GtfsServer {
         finish(self.catalog.unregister(args.feed_id))
     }
 
+    /// Fetches the static zip and realtime protobufs again.
+    ///
+    /// Retries a feed that failed to load at startup from its saved request. A loaded
+    /// feed is fetched again even when its TTL has not elapsed.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Feed id. Omit it when only one feed is registered. See [`FeedIdArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON health after the refresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the id does not
+    /// resolve, or when a feed that has not loaded cannot be fetched or parsed. A
+    /// loaded feed that fails a later refresh keeps its previous data and records the
+    /// failure on the health object.
     #[tool(
         description = "Fetch the static zip and realtime protobufs again. Retries a feed that failed to load at startup."
     )]
@@ -318,6 +438,25 @@ impl GtfsServer {
         finish(self.catalog.refresh(args.feed_id).await)
     }
 
+    /// Reports entity counts, header timestamps, age, TTL, and the last error.
+    ///
+    /// Refreshes a loaded feed first when the realtime TTL has elapsed. A feed that
+    /// failed at startup returns `ready` set to false and does not retry until
+    /// [`GtfsServer::refresh_feed`].
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Feed id. Omit it when only one feed is registered. See [`FeedIdArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON health for the feed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the id does not
+    /// resolve to a feed. A startup failure is a successful body with `ready` false,
+    /// not an `Err`.
     #[tool(
         description = "Feed health: entity counts, header timestamps, age, TTL, and last error. Refreshes a loaded feed first when the realtime TTL has elapsed. A feed that failed at startup returns ready:false and does not retry until refresh_feed."
     )]
@@ -328,6 +467,24 @@ impl GtfsServer {
         finish(self.catalog.health(args.feed_id).await)
     }
 
+    /// Searches stops by `stop_id`, `stop_code`, or name.
+    ///
+    /// Exact ids and codes rank first. Each hit includes `stop_id`, name,
+    /// coordinates, `location_type`, `parent_station`, and `platform_code`. An empty
+    /// query lists the first page. Page with `offset` until `next_offset` is null.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Feed id, query, and page window. See [`SearchArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of stops, including `total`, `offset`, and `next_offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the feed id does
+    /// not name a loaded feed or the catalog cannot answer the search.
     #[tool(
         description = "Search stops by stop_id, stop_code, or name. Ranked exact ids and codes first. Returns stop_id, name, coordinates, location_type, parent_station, and platform_code."
     )]
@@ -347,6 +504,23 @@ impl GtfsServer {
         )
     }
 
+    /// Searches routes by `route_id`, short name, or long name.
+    ///
+    /// Each hit includes `route_type` and `route_type_name`. An empty query lists the
+    /// first page. Page with `offset` until `next_offset` is null.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Feed id, query, and page window. See [`SearchArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of routes, including `total`, `offset`, and `next_offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the feed id does
+    /// not name a loaded feed or the catalog cannot answer the search.
     #[tool(
         description = "Search routes by route_id, short name, or long name. Returns route_type and route_type_name."
     )]
@@ -366,6 +540,27 @@ impl GtfsServer {
         )
     }
 
+    /// Reports where a trip is at a chosen clock time.
+    ///
+    /// Matches `trip_id` or `trip_short_name` and prefers the trip that has a live
+    /// vehicle. The body includes `delay_label`, the vehicle position and status, and
+    /// the next stops. When `stop` is set, `at_stop` carries scheduled and estimated
+    /// local `HH:MM`, delay seconds, `assigned_stop_id`, `platform_code`, and track.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Trip, optional stop, clock, and upcoming-stop limit. See
+    ///   [`TripStatusArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON for the chosen trip, plus alternatives when several trips match.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when `trip` is empty,
+    /// no trip matches, the optional stop does not resolve, or the feed id does not
+    /// name a loaded feed.
     #[tool(
         description = "Where a trip is now. Matches trip_id or trip_short_name and prefers the trip that has a live vehicle. Returns delay_label, vehicle position and status, the next stops, and at_stop (scheduled and estimated local HH:MM, delay seconds, assigned_stop_id, platform_code, track) when stop is set."
     )]
@@ -389,6 +584,24 @@ impl GtfsServer {
         )
     }
 
+    /// Returns the stop sequence for one trip.
+    ///
+    /// Each row has scheduled and estimated times and any realtime platform
+    /// assignment. Page with `offset` until `next_offset` is null.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Trip, clock, and page window. See [`ScheduleArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON for one trip and one page of its stops.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when `trip` is empty,
+    /// no trip matches, several trips share that short name, or the feed id does not
+    /// name a loaded feed.
     #[tool(
         description = "Stop sequence for one trip, with scheduled and estimated times and any realtime platform assignment. Page with offset."
     )]
@@ -412,6 +625,24 @@ impl GtfsServer {
         )
     }
 
+    /// Builds a departure board for a station.
+    ///
+    /// Combines today's and yesterday's static schedule with realtime delays,
+    /// cancellations, and assigned tracks. A platform stop expands to the parent
+    /// station and its sibling platforms. Rows are sorted by estimated departure.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Stop, optional route, clock, windows, and page. See [`BoardArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of departures. `next_offset` is null on the last page.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when `stop` is empty,
+    /// the stop does not resolve, or the feed id does not name a loaded feed.
     #[tool(
         description = "Departure board for a station. Combines today's and yesterday's static schedule with realtime delays, cancellations, and assigned tracks. Platform stops expand to the parent station and sibling platforms. Sorted by estimated departure."
     )]
@@ -439,6 +670,23 @@ impl GtfsServer {
         )
     }
 
+    /// Lists live vehicle positions.
+    ///
+    /// Filter by route, trip, vehicle id or label, or the stop the vehicle currently
+    /// reports. Coordinates are rounded to five decimal places.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Optional filters and page window. See [`VehicleArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of vehicles.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the feed id does
+    /// not name a loaded feed or the catalog cannot answer the query.
     #[tool(
         description = "Live vehicle positions. Filter by route, trip, vehicle id/label, or current stop. Coordinates are rounded to 5 decimals."
     )]
@@ -464,6 +712,25 @@ impl GtfsServer {
         )
     }
 
+    /// Lists trip updates with delay seconds and platform assignments.
+    ///
+    /// Each stop update can carry `assigned_stop_id` and `platform_code`. A stop
+    /// filter matches `stop_id` or the static stop at that `stop_sequence`, so an
+    /// update that omits `stop_id` still matches.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Optional route, trip, and stop filters, plus page and per-trip stop
+    ///   limits. See [`TripUpdateArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of trips and their stop-time updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the feed id does
+    /// not name a loaded feed or the catalog cannot answer the query.
     #[tool(
         description = "Trip updates with delay seconds and assigned_stop_id / platform_code. A stop filter matches stop_id or the static stop at that stop_sequence, so updates that omit stop_id still match."
     )]
@@ -489,6 +756,25 @@ impl GtfsServer {
         )
     }
 
+    /// Lists service alerts with cause, effect, and clipped text.
+    ///
+    /// Each alert includes severity, the active period, informed entities, and header
+    /// and description text clipped to `max_chars`. `active_only` keeps alerts in
+    /// effect at `at_unix`. Route and stop selectors are OR within one alert and AND
+    /// across the two filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Route, stop, text, activity, clock, and page. See [`AlertArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON page of alerts.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the feed id does
+    /// not name a loaded feed or the catalog cannot answer the query.
     #[tool(
         description = "Service alerts with cause, effect, severity, active period, informed entities, and clipped header/description text. active_only keeps alerts in effect at at_unix. Route and stop selectors are OR within an alert and AND across the two filters."
     )]
@@ -514,6 +800,25 @@ impl GtfsServer {
         )
     }
 
+    /// Decodes one GTFS-Realtime `FeedMessage` into compact JSON.
+    ///
+    /// The bytes come from a filesystem path, an `http` or `https` URL, or standard
+    /// base64. This does not register a feed. Use it when a protobuf looks wrong.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - Exactly one of path, URL, or base64, plus page limits and optional
+    ///   headers. See [`DecodeArgs`].
+    ///
+    /// # Returns
+    ///
+    /// Compact JSON for one page of entities.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with compact JSON of a [`crate::AppError`] when the caller does
+    /// not pass exactly one source, the bytes cannot be read or decoded, or a header
+    /// is rejected. Header values are not copied into the error.
     #[tool(
         description = "Decode one GTFS-Realtime FeedMessage from a path, http(s) URL, or base64 string into compact JSON. Does not register a feed. Use this when a protobuf looks wrong."
     )]
@@ -544,6 +849,20 @@ impl GtfsServer {
 )]
 impl ServerHandler for GtfsServer {}
 
+/// Serves `server` as MCP on standard input and output until the client closes the stream.
+///
+/// # Arguments
+///
+/// * `server` - Tool server consumed by the stdio transport.
+///
+/// # Returns
+///
+/// `Ok(())` when the session ends.
+///
+/// # Errors
+///
+/// Returns [`crate::AppError`] when the stdio transport fails to start or the
+/// session ends with an error. The message is prefixed with `stdio:`.
 pub async fn serve_stdio(server: GtfsServer) -> Result<(), AppError> {
     let running = server
         .serve(rmcp::transport::stdio())
@@ -556,6 +875,27 @@ pub async fn serve_stdio(server: GtfsServer) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Binds `bind` and serves streamable HTTP MCP until Ctrl-C.
+///
+/// MCP is mounted at `/mcp`. `GET /healthz` returns `ok`. The bound address is
+/// written to the tracing log.
+///
+/// # Arguments
+///
+/// * `catalog` - Feeds shared by every HTTP session. Each session builds its own
+///   [`GtfsServer`].
+/// * `bind` - Local socket address to listen on.
+/// * `allowed_hosts` - Hostnames the streamable HTTP transport accepts. An empty
+///   list does not set an allowlist.
+///
+/// # Returns
+///
+/// `Ok(())` after the Ctrl-C shutdown finishes.
+///
+/// # Errors
+///
+/// Returns [`crate::AppError`] when the socket cannot be bound, the bound address
+/// cannot be read, or the HTTP server exits with an error.
 pub async fn serve_http(
     catalog: Arc<Catalog>,
     bind: SocketAddr,
@@ -578,7 +918,28 @@ pub async fn serve_http(
     Ok(())
 }
 
-/// Bind an HTTP server on a background task. Used by tests and embedders.
+/// Binds an HTTP server and runs it on a background task.
+///
+/// Used by tests and embedders. MCP is mounted at `/mcp` and `GET /healthz`
+/// returns `ok`. The task ignores an error from the server. Abort the returned
+/// task to stop the listener.
+///
+/// # Arguments
+///
+/// * `catalog` - Feeds shared by every HTTP session. Each session builds its own
+///   [`GtfsServer`].
+/// * `bind` - Local socket address to listen on. Port `0` selects a free port.
+/// * `allowed_hosts` - Hostnames the streamable HTTP transport accepts. An empty
+///   list does not set an allowlist.
+///
+/// # Returns
+///
+/// The address that was bound, and the task serving it.
+///
+/// # Errors
+///
+/// Returns [`crate::AppError`] when the socket cannot be bound or the bound
+/// address cannot be read.
 pub async fn spawn_http(
     catalog: Arc<Catalog>,
     bind: SocketAddr,
@@ -597,6 +958,17 @@ pub async fn spawn_http(
     Ok((addr, handle))
 }
 
+/// Builds the Axum router for `/healthz` and streamable HTTP MCP at `/mcp`.
+///
+/// # Arguments
+///
+/// * `catalog` - Feeds cloned into each new [`GtfsServer`].
+/// * `allowed_hosts` - Host allowlist. Applied only when the list is not empty.
+///
+/// # Returns
+///
+/// A router whose `/healthz` route returns `ok` and whose `/mcp` route speaks
+/// streamable HTTP MCP.
 fn http_router(catalog: Arc<Catalog>, allowed_hosts: Vec<String>) -> axum::Router {
     let mut config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
@@ -617,6 +989,19 @@ fn http_router(catalog: Arc<Catalog>, allowed_hosts: Vec<String>) -> axum::Route
         .nest_service("/mcp", service)
 }
 
+/// Turns a catalog result into the compact JSON string a tool returns.
+///
+/// # Arguments
+///
+/// * `result` - JSON value, or a [`crate::AppError`] from a catalog call.
+///
+/// # Returns
+///
+/// Compact JSON text of the value.
+///
+/// # Errors
+///
+/// Returns `Err` with the compact JSON of the error object when `result` is `Err`.
 fn finish(result: Result<Value, AppError>) -> Result<String, String> {
     match result {
         Ok(value) => Ok(compact(&value)),
@@ -624,22 +1009,72 @@ fn finish(result: Result<Value, AppError>) -> Result<String, String> {
     }
 }
 
+/// Serializes `value` as compact JSON.
+///
+/// # Arguments
+///
+/// * `value` - JSON value to write without extra whitespace.
+///
+/// # Returns
+///
+/// The JSON text, or `{"error":"failed to serialize"}` when serialization fails.
 fn compact(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{\"error\":\"failed to serialize\"}".into())
 }
 
+/// Clamps an optional page size into `1..=max`.
+///
+/// # Arguments
+///
+/// * `value` - Requested size. `None` uses `default`.
+/// * `default` - Size used when `value` is omitted.
+/// * `max` - Inclusive upper bound.
+///
+/// # Returns
+///
+/// The clamped size as `usize`. Values below 1 become 1.
+///
+/// # Panics
+///
+/// Panics when `max` is below 1. [`u32::clamp`] requires the lower bound to be
+/// at most the upper bound.
 fn limit_of(value: Option<u32>, default: u32, max: u32) -> usize {
     value.unwrap_or(default).clamp(1, max) as usize
 }
 
+/// Caps an optional duration in minutes at `max`.
+///
+/// # Arguments
+///
+/// * `value` - Requested minutes. `None` uses `default`. Zero is preserved.
+/// * `default` - Minutes used when `value` is omitted.
+/// * `max` - Inclusive upper bound. Larger values become `max`.
+///
+/// # Returns
+///
+/// The capped duration as `u64`. Zero stays zero.
 fn minutes_of(value: Option<u32>, default: u32, max: u32) -> u64 {
     u64::from(value.unwrap_or(default).min(max))
 }
 
+/// Converts an optional row offset to `usize`.
+///
+/// # Arguments
+///
+/// * `value` - Rows to skip. `None` starts at the first row.
+///
+/// # Returns
+///
+/// The offset, or zero when `value` is omitted.
 fn offset_of(value: Option<u32>) -> usize {
     value.unwrap_or(0) as usize
 }
 
+/// Returns the current Unix time in seconds.
+///
+/// # Returns
+///
+/// Seconds since the Unix epoch, or zero when the clock is before the epoch.
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

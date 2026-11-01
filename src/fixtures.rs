@@ -1,4 +1,10 @@
-//! Tiny Harbor Line feed used by tests and local demos. No network.
+//! In-memory Harbor Line GTFS for tests and local demos.
+//!
+//! [`materialize`] writes a static zip and GTFS-Realtime protobufs into a
+//! directory the caller chooses. [`static_zip_bytes`] builds the static zip
+//! without touching the filesystem. [`reference_unix`] is the sample clock
+//! those protobufs are stamped with. Nothing in this module opens a network
+//! connection.
 
 use std::fs;
 use std::io::{Cursor, Write};
@@ -20,23 +26,67 @@ use crate::gtfs_rt::{
     TripDescriptor, TripUpdate, VehicleDescriptor, VehiclePosition,
 };
 
-/// 2026-01-15 16:30:00 UTC, which is 11:30 in America/New_York.
+/// Unix timestamp for 2026-01-15 16:30:00 UTC (11:30 in America/New_York).
+///
+/// Trip updates, vehicle positions, and alerts in this module are stamped with
+/// this instant. Tests pass it as `at_unix` so results do not depend on the
+/// wall clock.
+///
+/// # Examples
+///
+/// ```
+/// let at = gtfs_mcp::fixtures::reference_unix();
+/// assert_eq!(at, 1_768_494_600);
+/// ```
+///
+/// # Returns
+///
+/// Seconds since the Unix epoch.
+///
+/// # Panics
+///
+/// Panics if that civil time is not a single UTC instant.
 pub fn reference_unix() -> i64 {
     chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 1, 15, 16, 30, 0)
         .unwrap()
         .timestamp()
 }
 
+/// Paths and clock for one Harbor Line sample written by [`materialize`].
 #[derive(Debug)]
 pub struct HarborPaths {
+    /// Directory that holds the sample files.
     pub dir: PathBuf,
+    /// Static GTFS zip, `static.zip` under [`Self::dir`].
     pub static_zip: PathBuf,
+    /// TripUpdates protobuf, `trip-updates.pb` under [`Self::dir`].
     pub trip_updates: PathBuf,
+    /// VehiclePositions protobuf, `vehicle-positions.pb` under [`Self::dir`].
     pub vehicle_positions: PathBuf,
+    /// Alerts protobuf, `alerts.pb` under [`Self::dir`].
     pub alerts: PathBuf,
+    /// Sample clock. Equal to [`reference_unix`].
     pub at_unix: i64,
 }
 
+/// Writes a Harbor Line static zip and realtime protobufs into `dir`.
+///
+/// Creates `dir` when it is missing. The zip is `static.zip`. Realtime files
+/// are `trip-updates.pb`, `vehicle-positions.pb`, and `alerts.pb`, each stamped
+/// with [`reference_unix`].
+///
+/// # Arguments
+///
+/// * `dir` - Directory to create and fill. Files with these names are replaced.
+///
+/// # Returns
+///
+/// Paths of the written files and the sample clock.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] when the directory cannot be created or a sample
+/// file cannot be written.
 pub fn materialize(dir: &Path) -> std::io::Result<HarborPaths> {
     fs::create_dir_all(dir)?;
     let static_zip = dir.join("static.zip");
@@ -58,6 +108,23 @@ pub fn materialize(dir: &Path) -> std::io::Result<HarborPaths> {
     })
 }
 
+/// Writes the Harbor Line GTFS text tables into a zip at `path`.
+///
+/// Entries use the stored method. The archive contains agency, stops, routes,
+/// trips, stop times, calendar, calendar dates, and feed info.
+///
+/// # Arguments
+///
+/// * `path` - Destination zip. The parent directory must already exist.
+///
+/// # Returns
+///
+/// `Ok(())` after the archive is flushed.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] when the file cannot be created or a zip entry
+/// cannot be written.
 fn write_static_zip(path: &Path) -> std::io::Result<()> {
     let file = fs::File::create(path)?;
     let mut zip = ZipWriter::new(file);
@@ -103,6 +170,15 @@ fn write_static_zip(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Builds a full-dataset GTFS-Realtime header stamped at `at`.
+///
+/// # Arguments
+///
+/// * `at` - Header timestamp, in Unix seconds.
+///
+/// # Returns
+///
+/// A version `2.0` header with feed version `harbor-1`.
 fn header(at: i64) -> FeedHeader {
     FeedHeader {
         gtfs_realtime_version: "2.0".into(),
@@ -112,6 +188,18 @@ fn header(at: i64) -> FeedHeader {
     }
 }
 
+/// Encodes a TripUpdates message for trip `177-BOS` at `at`.
+///
+/// Stop sequence 2 is five minutes late. Stop sequence 3 arrives seven minutes
+/// late, departs eight minutes late, and is assigned to `NHV:track:12`.
+///
+/// # Arguments
+///
+/// * `at` - Feed timestamp, in Unix seconds.
+///
+/// # Returns
+///
+/// Protobuf bytes of one [`crate::gtfs_rt::FeedMessage`].
 fn trip_updates_bytes(at: i64) -> Vec<u8> {
     let update = TripUpdate {
         trip: TripDescriptor {
@@ -172,6 +260,18 @@ fn trip_updates_bytes(at: i64) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// Encodes a VehiclePositions message for vehicle `AMT177` at `at`.
+///
+/// The vehicle is in transit to stop `NHV` near latitude 41.25 and longitude
+/// -72.95, on trip `177-BOS`.
+///
+/// # Arguments
+///
+/// * `at` - Feed timestamp, in Unix seconds.
+///
+/// # Returns
+///
+/// Protobuf bytes of one [`crate::gtfs_rt::FeedMessage`].
 fn vehicle_bytes(at: i64) -> Vec<u8> {
     let vehicle = VehiclePosition {
         trip: Some(TripDescriptor {
@@ -208,6 +308,18 @@ fn vehicle_bytes(at: i64) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// Encodes two service alerts whose active window contains `at`.
+///
+/// One alert names route `NEC` and stop `NYP`. The other names route `LOCAL`.
+/// The window starts one hour before `at` and ends one day after.
+///
+/// # Arguments
+///
+/// * `at` - Feed timestamp, in Unix seconds.
+///
+/// # Returns
+///
+/// Protobuf bytes of one [`crate::gtfs_rt::FeedMessage`].
 #[allow(deprecated)]
 fn alerts_bytes(at: i64) -> Vec<u8> {
     let window = TimeRange {
@@ -264,6 +376,16 @@ fn alerts_bytes(at: i64) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// Wraps `value` as one English GTFS-Realtime translation.
+///
+/// # Arguments
+///
+/// * `value` - Plain text stored on the translation.
+///
+/// # Returns
+///
+/// A [`crate::gtfs_rt::TranslatedString`] whose only translation is `value`
+/// with language `en`.
 fn text(value: &str) -> TranslatedString {
     TranslatedString {
         translation: vec![Translation {
@@ -273,7 +395,27 @@ fn text(value: &str) -> TranslatedString {
     }
 }
 
-/// Silence unused import if Cursor is unused. Kept so callers can wrap bytes.
+/// Builds the Harbor Line static GTFS zip in memory.
+///
+/// The archive uses the stored method and includes agency, stops, routes,
+/// trips, stop times, calendar, and feed info. It does not include calendar
+/// dates and it does not write a file. [`materialize`] writes the full sample,
+/// including calendar dates and the realtime protobufs.
+///
+/// # Examples
+///
+/// ```
+/// let bytes = gtfs_mcp::fixtures::static_zip_bytes();
+/// assert!(bytes.starts_with(b"PK"));
+/// ```
+///
+/// # Returns
+///
+/// Zip bytes.
+///
+/// # Panics
+///
+/// Panics if an in-memory zip entry cannot be started or written.
 #[allow(dead_code)]
 pub fn static_zip_bytes() -> Vec<u8> {
     let mut cursor = Cursor::new(Vec::new());

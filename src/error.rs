@@ -1,14 +1,31 @@
+//! Errors returned to an MCP client.
+//!
+//! [`AppError`] is a message plus an optional hint and extra JSON fields. Tool
+//! handlers serialize it with [`AppError::to_json`]. It is not a panic.
+
 use serde_json::{Map, Value};
 
 /// Failure an agent should see, with optional structured fields.
 #[derive(Debug)]
 pub struct AppError {
+    /// What went wrong, safe to show to the model.
     pub error: String,
+    /// A next step, when one is known.
     pub hint: Option<String>,
+    /// Extra JSON merged into [`AppError::to_json`]. Header values do not belong here.
     pub extra: Map<String, Value>,
 }
 
 impl AppError {
+    /// Build an error with no hint and no extra fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - the message stored in [`AppError::error`].
+    ///
+    /// # Returns
+    ///
+    /// A new [`AppError`].
     pub fn new(error: impl Into<String>) -> Self {
         Self {
             error: error.into(),
@@ -17,16 +34,40 @@ impl AppError {
         }
     }
 
+    /// Attach a hint and return the same error.
+    ///
+    /// # Arguments
+    ///
+    /// * `hint` - text stored in [`AppError::hint`].
+    ///
+    /// # Returns
+    ///
+    /// `self`, so callers can chain.
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
     }
 
+    /// Add one extra JSON field and return the same error.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - field name in the object returned by [`AppError::to_json`].
+    /// * `value` - JSON value for that field.
+    ///
+    /// # Returns
+    ///
+    /// `self`, so callers can chain.
     pub fn extra(mut self, key: impl Into<String>, value: Value) -> Self {
         self.extra.insert(key.into(), value);
         self
     }
 
+    /// JSON object with `error`, optional `hint`, and every extra field.
+    ///
+    /// # Returns
+    ///
+    /// A JSON object. `error` overwrites an extra field of the same name.
     pub fn to_json(&self) -> Value {
         let mut map = self.extra.clone();
         map.insert("error".into(), Value::String(self.error.clone()));
@@ -82,6 +123,15 @@ impl From<prost::DecodeError> for AppError {
     }
 }
 
+/// Shortcut for [`AppError::new`].
+///
+/// # Arguments
+///
+/// * `message` - the error text.
+///
+/// # Returns
+///
+/// A new [`AppError`] with no hint.
 pub fn err(message: impl Into<String>) -> AppError {
     AppError::new(message)
 }

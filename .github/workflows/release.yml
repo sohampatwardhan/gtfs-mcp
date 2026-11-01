@@ -56,20 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Skip when this version is already on crates.io
+      # crates.io rejects clients with no User-Agent (HTTP 403). The script
+      # asks for this exact version, then the sparse index.
+      - name: See if this version is already on crates.io
         id: check
         run: |
-          version="${{ needs.verify.outputs.version }}"
-          code=$(curl -sS -o /tmp/crate.json -w '%{http_code}' https://crates.io/api/v1/crates/gtfs-mcp || true)
-          published=false
-          if [[ "$code" == "200" ]]; then
-            if python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(open("/tmp/crate.json")); raise SystemExit(0 if any(x["num"]==v for x in d["versions"]) else 1)' "$version"; then
-              published=true
-            fi
+          if bash scripts/publish-crate.sh --check-only; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "published=${published}" >> "$GITHUB_OUTPUT"
-          echo "gtfs-mcp ${version} already published: ${published}"
-      # The token below is minted by OIDC for this job and revoked when the job ends.
+      # The token is minted for this job and revoked when the job ends.
       # It is not a repository secret.
       - name: Authenticate to crates.io
         if: steps.check.outputs.published != 'true'
@@ -79,7 +76,7 @@ jobs:
         if: steps.check.outputs.published != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish --locked
+        run: bash scripts/publish-crate.sh
 
   binaries:
     needs: verify
@@ -311,9 +308,11 @@ jobs:
         with:
           pattern: bin-*
           path: artifacts
+      # Do not set registry-url. actions/setup-node@v4 then writes always-auth
+      # and a placeholder NODE_AUTH_TOKEN, which npm warns about and which
+      # replaces trusted publishing (OIDC).
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - name: Publish npm packages that are not already published
         run: bash scripts/publish-npm.sh artifacts

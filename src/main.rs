@@ -1,3 +1,27 @@
+//! `gtfs-mcp` binary.
+//!
+//! `stdio` speaks MCP on stdin and stdout. `http` listens for streamable HTTP
+//! (default `127.0.0.1:8091`, MCP at `/mcp`, liveness at `/healthz`).
+//!
+//! `GTFS_MCP_STATIC` is required. Flags such as `--static` override the matching
+//! variable. A missing static location or a malformed optional value exits with
+//! status 1 before the server listens. A static file that is set but cannot be
+//! read is reported on stderr and the process still starts.
+//!
+//! # Examples
+//!
+//! ```text
+//! GTFS_MCP_STATIC=https://example.com/gtfs.zip gtfs-mcp stdio
+//! gtfs-mcp --static https://example.com/gtfs.zip http
+//! ```
+
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
+#![warn(clippy::missing_docs_in_private_items)]
+#![warn(clippy::missing_errors_doc)]
+#![warn(clippy::missing_panics_doc)]
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -11,6 +35,7 @@ use gtfs_mcp::{serve_http, serve_stdio, startup_plan, Catalog, GtfsServer, Start
     version,
     about = "MCP server for GTFS static schedules and GTFS-Realtime"
 )]
+/// Command line for the startup feed and the `stdio` or `http` subcommand.
 struct Cli {
     /// Id for the startup feed. Overrides GTFS_MCP_FEED_ID. Default `default`.
     #[arg(long, global = true)]
@@ -36,10 +61,12 @@ struct Cli {
     /// JSON object of HTTP headers for the startup feed. Overrides GTFS_MCP_HTTP_HEADERS. Values are never logged.
     #[arg(long, global = true)]
     http_headers: Option<String>,
+    /// `stdio` or `http`.
     #[command(subcommand)]
     command: Command,
 }
 
+/// How this process speaks MCP.
 #[derive(Subcommand)]
 enum Command {
     /// Speak MCP over stdin and stdout. Logs go to stderr.
@@ -55,6 +82,12 @@ enum Command {
     },
 }
 
+/// Parse flags, load the startup feed, and serve until the process is stopped.
+///
+/// # Panics
+///
+/// Does not panic. Configuration and server failures print to stderr and exit
+/// with status 1.
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -83,6 +116,14 @@ async fn main() {
     }
 }
 
+/// Start stderr tracing.
+///
+/// # Arguments
+///
+/// * `http` - when true, the default filter is `info`. Otherwise it is `warn`.
+///   `GTFS_MCP_LOG` or `RUST_LOG` overrides that default.
+///
+/// A second call is ignored.
 fn init_tracing(http: bool) {
     let fallback = if http { "info" } else { "warn" };
     let filter = std::env::var("GTFS_MCP_LOG")
@@ -95,6 +136,23 @@ fn init_tracing(http: bool) {
         .try_init();
 }
 
+/// Register the feed from the environment and CLI, or record a download failure.
+///
+/// # Arguments
+///
+/// * `catalog` - empty catalog that receives the startup feed.
+/// * `cli` - flags that override `GTFS_MCP_*` variables.
+///
+/// # Returns
+///
+/// `Ok(())` when configuration is valid. A failed download is stored on the
+/// catalog and still returns `Ok`, so `register_feed` can replace it.
+///
+/// # Errors
+///
+/// Returns [`gtfs_mcp::ConfigError`] when [`startup_plan`] rejects the
+/// configuration. The message names the variable and does not include header
+/// values.
 async fn preload(catalog: &Catalog, cli: &Cli) -> Result<(), gtfs_mcp::ConfigError> {
     let request = startup_plan(
         std::env::vars(),
@@ -134,6 +192,16 @@ async fn preload(catalog: &Catalog, cli: &Cli) -> Result<(), gtfs_mcp::ConfigErr
     Ok(())
 }
 
+/// Replace header values of 4 or more characters with `[redacted]`.
+///
+/// # Arguments
+///
+/// * `text` - error text that might contain a header value.
+/// * `headers` - values to strip. Names are left alone.
+///
+/// # Returns
+///
+/// `text` with those values replaced.
 fn redact(text: &str, headers: &BTreeMap<String, String>) -> String {
     let mut text = text.to_string();
     for value in headers.values() {

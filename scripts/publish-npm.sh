@@ -9,6 +9,16 @@ cd "$root"
 artifacts="${1:-artifacts}"
 version=$(sed -n 's/^version = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' Cargo.toml | head -n 1)
 
+# setup-node@v4 used to inject this when registry-url was set. npm 11 rejects it,
+# and the paired placeholder token hides OIDC trusted publishing.
+if [[ -n "${NPM_CONFIG_USERCONFIG:-}" && -f "$NPM_CONFIG_USERCONFIG" ]]; then
+  grep -v '^always-auth=' "$NPM_CONFIG_USERCONFIG" > "${NPM_CONFIG_USERCONFIG}.tmp" || true
+  mv "${NPM_CONFIG_USERCONFIG}.tmp" "$NPM_CONFIG_USERCONFIG"
+fi
+if [[ "${NODE_AUTH_TOKEN:-}" == "XXXXX-XXXXX-XXXXX-XXXXX" ]]; then
+  unset NODE_AUTH_TOKEN
+fi
+
 copy_bin() {
   local slug="$1"
   local src="$2"
