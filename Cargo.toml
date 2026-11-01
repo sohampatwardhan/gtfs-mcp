@@ -25,6 +25,10 @@ include = [
 name = "gtfs_mcp"
 path = "src/lib.rs"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["-D", "warnings"]
+
 [[bin]]
 name = "gtfs-mcp"
 path = "src/main.rs"

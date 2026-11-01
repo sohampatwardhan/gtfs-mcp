@@ -1,6 +1,8 @@
 # gtfs-mcp
 
-MCP server that lets an agent read GTFS static schedules and GTFS-Realtime feeds. Register a feed, then ask where a vehicle is, how late it is, which track it was assigned, what the next departures are, and which alerts are active.
+[![docs.rs](https://docs.rs/gtfs-mcp/badge.svg)](https://docs.rs/gtfs-mcp)
+
+MCP server that lets an agent read GTFS static schedules and GTFS-Realtime feeds. The API reference is on [docs.rs](https://docs.rs/gtfs-mcp). Register a feed, then ask where a vehicle is, how late it is, which track it was assigned, what the next departures are, and which alerts are active.
 
 It works with any agency. Startup takes one static GTFS zip (URL or path) and optional TripUpdates, VehiclePositions, and Alerts protobufs. `register_feed` can add more feeds after the process is running.
 

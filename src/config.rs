@@ -14,23 +14,80 @@ use crate::source::validate_headers;
 /// Placeholder used in the missing-static error. Reserved domain, not a live feed.
 pub const STATIC_EXAMPLE: &str = "https://example.com/gtfs.zip";
 
+/// CLI values that replace the matching `GTFS_MCP_*` variable.
+///
+/// `None` means the flag was not passed, so the environment value is used.
+/// `Some` empty string clears the environment value.
 #[derive(Debug, Clone, Default)]
 pub struct StartupOverrides {
+    /// Replaces `GTFS_MCP_FEED_ID`.
     pub feed_id: Option<String>,
+    /// Replaces `GTFS_MCP_STATIC`. Required once flags and env are merged.
     pub static_gtfs: Option<String>,
+    /// Replaces `GTFS_MCP_TRIP_UPDATES`.
     pub trip_updates: Option<String>,
+    /// Replaces `GTFS_MCP_VEHICLE_POSITIONS`.
     pub vehicle_positions: Option<String>,
+    /// Replaces `GTFS_MCP_ALERTS`.
     pub alerts: Option<String>,
+    /// Replaces `GTFS_MCP_RT_TTL`. Already parsed, so it is in range only after
+    /// [`startup_plan`] checks it.
     pub rt_ttl_secs: Option<u64>,
+    /// Replaces `GTFS_MCP_STATIC_TTL`.
     pub static_ttl_secs: Option<u64>,
+    /// Replaces `GTFS_MCP_HTTP_HEADERS`. A JSON object of strings. Values are not
+    /// copied into [`ConfigError`].
     pub http_headers: Option<String>,
 }
 
+/// Why startup configuration cannot start the server.
 #[derive(Debug)]
 pub struct ConfigError {
+    /// Text for stderr. Header values are not included.
     pub message: String,
 }
 
+/// Build the one startup [`RegisterRequest`] from the environment and CLI flags.
+///
+/// Empty values are ignored. `http://` and `https://` are URLs; anything else is
+/// a filesystem path. A set flag replaces the matching variable, including when
+/// the flag is empty.
+///
+/// # Arguments
+///
+/// * `vars` - process environment, typically `std::env::vars()`.
+/// * `overrides` - CLI flags. `None` leaves the variable in place.
+///
+/// # Returns
+///
+/// The request the catalog should load. `feed_id` is `default` when unset.
+///
+/// # Errors
+///
+/// Returns [`ConfigError`] when `GTFS_MCP_STATIC` is missing or empty, the feed
+/// id is not 1–64 characters of letters, numbers, `_`, `.`, `:`, or `-`, a TTL
+/// is not an integer or is outside its range (realtime 1–3600, static 0–604800),
+/// or `GTFS_MCP_HTTP_HEADERS` is not a JSON object of strings. Several problems
+/// are joined with `"; "`.
+///
+/// # Examples
+///
+/// ```
+/// use gtfs_mcp::{startup_plan, StartupOverrides};
+///
+/// let request = startup_plan(
+///     [(
+///         "GTFS_MCP_STATIC".to_string(),
+///         "https://example.com/gtfs.zip".to_string(),
+///     )],
+///     &StartupOverrides::default(),
+/// )
+/// .unwrap();
+/// assert_eq!(
+///     request.static_url.as_deref(),
+///     Some("https://example.com/gtfs.zip")
+/// );
+/// ```
 pub fn startup_plan(
     vars: impl IntoIterator<Item = (String, String)>,
     overrides: &StartupOverrides,
@@ -147,6 +204,15 @@ pub fn startup_plan(
 }
 
 /// A set flag replaces the environment variable, including when the flag is empty.
+///
+/// # Arguments
+///
+/// * `flag` - CLI value. `None` means the flag was absent.
+/// * `env` - trimmed environment value, if the variable was set and non-empty.
+///
+/// # Returns
+///
+/// The flag text, the environment text, or `None` when the chosen value is empty.
 fn pick(flag: &Option<String>, env: Option<&String>) -> Option<String> {
     match flag {
         Some(value) => {
@@ -161,6 +227,25 @@ fn pick(flag: &Option<String>, env: Option<&String>) -> Option<String> {
     }
 }
 
+/// Parse a TTL from a flag or an environment string and check its range.
+///
+/// # Arguments
+///
+/// * `flag` - CLI seconds, when the flag was passed.
+/// * `env` - environment text, when the variable was set.
+/// * `var` - variable name used in the error.
+/// * `min` - smallest allowed value, inclusive.
+/// * `max` - largest allowed value, inclusive.
+///
+/// # Returns
+///
+/// `Ok(None)` when neither the flag nor the variable is set, or `Ok(Some)`
+/// for a value inside the range.
+///
+/// # Errors
+///
+/// Returns an error string when the environment value is not an integer, or
+/// when the number is outside `min..=max`. The string does not include secrets.
 fn ttl_from(
     flag: Option<u64>,
     env: Option<&String>,
@@ -190,6 +275,20 @@ fn ttl_from(
     Ok(Some(value))
 }
 
+/// Parse `GTFS_MCP_HTTP_HEADERS` without putting values into the error text.
+///
+/// # Arguments
+///
+/// * `raw` - JSON object of header name to string.
+///
+/// # Returns
+///
+/// The header map.
+///
+/// # Errors
+///
+/// Returns an error when `raw` is not a JSON object, or when a value is not a
+/// string. The message names the header, not the value.
 fn parse_headers(raw: &str) -> Result<BTreeMap<String, String>, String> {
     let value: Value = serde_json::from_str(raw)
         .map_err(|_| "GTFS_MCP_HTTP_HEADERS is not a JSON object of strings".to_string())?;
@@ -208,6 +307,16 @@ fn parse_headers(raw: &str) -> Result<BTreeMap<String, String>, String> {
     Ok(headers)
 }
 
+/// Split a location into `(url, path)`.
+///
+/// # Arguments
+///
+/// * `value` - a URL, a filesystem path, or `None`.
+///
+/// # Returns
+///
+/// `(Some(url), None)` for `http://` and `https://`, `(None, Some(path))` for
+/// anything else, or `(None, None)` when `value` is `None`.
 fn split_loc(value: Option<String>) -> (Option<String>, Option<String>) {
     match value {
         Some(value) if value.starts_with("http://") || value.starts_with("https://") => {

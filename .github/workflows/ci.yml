@@ -22,6 +22,10 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --document-private-items --locked
       - name: Release build
         run: cargo build --release --locked
       - uses: actions/setup-node@v4

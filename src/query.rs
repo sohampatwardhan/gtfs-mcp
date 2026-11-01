@@ -1,3 +1,11 @@
+//! Turns a static GTFS database and decoded GTFS-Realtime into JSON.
+//!
+//! [`trip_status`], [`trip_schedule`], and [`departure_board`] join [`StaticDb`]
+//! stop times to trip updates borrowed through [`RtView`]. [`vehicle_positions`],
+//! [`trip_updates`], and [`alerts`] page one realtime feed and attach static names.
+//! [`decode_message`] renders a [`crate::gtfs_rt::FeedMessage`] without the static
+//! tables.
+
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
@@ -15,67 +23,141 @@ use crate::realtime::{
     vehicle_json, vehicle_status,
 };
 
+/// Borrowed GTFS-Realtime messages for one query.
+///
+/// Any feed may be absent when that URL was not configured.
 #[derive(Clone)]
 pub struct RtView<'a> {
+    /// TripUpdates [`crate::gtfs_rt::FeedMessage`], when one was loaded.
     pub trip_updates: Option<&'a FeedMessage>,
+    /// VehiclePositions [`crate::gtfs_rt::FeedMessage`], when one was loaded.
     pub vehicles: Option<&'a FeedMessage>,
+    /// Alerts [`crate::gtfs_rt::FeedMessage`], when one was loaded.
     pub alerts: Option<&'a FeedMessage>,
 }
 
+/// Selector for [`trip_status`].
 pub struct TripStatusQuery {
+    /// Trip id or trip short name.
     pub trip: String,
+    /// Stop id, stop code, or stop name. `None` leaves `at_stop` empty.
     pub stop: Option<String>,
+    /// Unix seconds used as the clock for scoring and upcoming stops.
     pub at_unix: i64,
+    /// Maximum upcoming stops included on each rendered trip.
     pub upcoming_limit: usize,
 }
 
+/// Selector for [`departure_board`].
 pub struct BoardQuery {
+    /// Stop id, stop code, or stop name.
     pub stop: String,
+    /// Route id or route short name. `None` keeps every route.
     pub route: Option<String>,
+    /// Unix seconds at the center of the departure window.
     pub at_unix: i64,
+    /// How far ahead of `at_unix` to search, in minutes.
     pub window_minutes: u64,
+    /// How far behind `at_unix` to search, in minutes.
     pub past_minutes: u64,
+    /// Maximum departures to return after `offset`.
     pub limit: usize,
+    /// Matching rows to skip.
     pub offset: usize,
+    /// Keep stops whose realtime relationship is `SKIPPED`.
     pub include_skipped: bool,
 }
 
+/// Selector for [`trip_schedule`].
 pub struct ScheduleQuery {
+    /// Trip id or trip short name.
     pub trip: String,
+    /// Unix seconds used to choose the service date.
     pub at_unix: i64,
+    /// Maximum stops to return.
     pub limit: usize,
+    /// Stops to skip.
     pub offset: usize,
 }
 
+/// Filters and page window for a vehicle-position query.
+///
+/// String filters are optional. `None` leaves that dimension unrestricted.
 pub struct VehicleQuery {
+    /// Route id or route short name.
     pub route: Option<String>,
+    /// Trip id or trip short name.
     pub trip: Option<String>,
+    /// Vehicle id or vehicle label.
     pub vehicle: Option<String>,
+    /// Stop id the vehicle reports.
     pub stop: Option<String>,
+    /// Maximum vehicles to return after `offset`.
     pub limit: usize,
+    /// Matching rows to skip.
     pub offset: usize,
 }
 
+/// Filters and page window for a trip-update query.
+///
+/// String filters are optional. `None` leaves that dimension unrestricted.
 pub struct TripUpdateQuery {
+    /// Route id or route short name.
     pub route: Option<String>,
+    /// Trip id or trip short name.
     pub trip: Option<String>,
+    /// Stop id, stop code, or stop name.
     pub stop: Option<String>,
+    /// Maximum trip updates to return after `offset`.
     pub limit: usize,
+    /// Matching rows to skip.
     pub offset: usize,
+    /// Maximum stop-time updates copied onto each trip.
     pub stop_limit: usize,
 }
 
+/// Filters and page window for a service-alert query.
+///
+/// String filters are optional. `None` leaves that dimension unrestricted.
 pub struct AlertQuery {
+    /// Route id or route short name.
     pub route: Option<String>,
+    /// Stop id, stop code, or stop name.
     pub stop: Option<String>,
+    /// Case-insensitive substring of the header or the description.
     pub text: Option<String>,
+    /// When `true`, keep alerts with no period and alerts whose periods contain `at_unix`.
     pub active_only: bool,
+    /// Unix seconds used when `active_only` is set.
     pub at_unix: i64,
+    /// Maximum alerts to return after `offset`.
     pub limit: usize,
+    /// Matching rows to skip.
     pub offset: usize,
+    /// Maximum characters kept from the header and from the description.
     pub max_chars: usize,
 }
 
+/// Builds the trip-status JSON for a trip id or short name.
+///
+/// Each static match is scored on the active dates among yesterday and today, or on the local date when neither is active. Up to two live trips within 25 points of the best score are rendered. When no live trip qualifies, the single best candidate is rendered. Stop times are capped at 400. Other matches are listed under `alternatives`, up to five. `matched` counts trip and service-date pairs.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]). A missing feed contributes no live rows.
+/// * `query` - Trip selector, optional stop, clock, and upcoming-stop limit ([`TripStatusQuery`]).
+///
+/// # Returns
+///
+/// JSON with `matched` and `trips`. `alternatives` is present when other matches were not rendered.
+///
+/// # Errors
+///
+/// * `query.trip` is empty or only whitespace.
+/// * No static trip has that id or short name.
+/// * `query.stop` is set and is empty, matches nothing, or matches more than one stop.
+/// * SQLite fails while loading the trip, its stop times, the stop, or the vehicle stop.
 pub fn trip_status(
     db: &StaticDb,
     rt: RtView<'_>,
@@ -162,6 +244,26 @@ pub fn trip_status(
     ]))
 }
 
+/// Builds one page of a trip's stop schedule with realtime estimates.
+///
+/// A short name that matches several trips is rejected unless `query.trip` is that trip's id. The service date is the later active date among yesterday and today, or the local date of `at_unix` when neither calendar day is active.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]). Trip updates overlay the scheduled times.
+/// * `query` - Trip selector, clock, and page window ([`ScheduleQuery`]).
+///
+/// # Returns
+///
+/// JSON for the trip header and one page of `stops`. `next_offset` is set when more stops remain.
+///
+/// # Errors
+///
+/// * `query.trip` is empty or only whitespace.
+/// * No static trip has that id or short name.
+/// * The text matches more than one trip and is not itself a trip id.
+/// * SQLite fails while loading the trip or its stop times.
 pub fn trip_schedule(
     db: &StaticDb,
     rt: RtView<'_>,
@@ -223,6 +325,24 @@ pub fn trip_schedule(
     ]))
 }
 
+/// Builds a departure board for a stop.
+///
+/// Yesterday and today are both searched so overnight trips remain visible. A row is kept when its service runs and its scheduled departure, or arrival when departure is missing, falls from `past_minutes` before `at_unix` through `window_minutes` after it. A route filter keeps a row whose route id equals a resolved id, or whose short name equals a filter string ignoring ASCII case. Stops marked `SKIPPED` are dropped unless `include_skipped` is set. Rows sort by estimated departure, then by the scheduled instant.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]). Trip updates supply delays and skip flags.
+/// * `query` - Stop, optional route, clock, window, and page ([`BoardQuery`]).
+///
+/// # Returns
+///
+/// JSON for the stop header and one page of `departures`.
+///
+/// # Errors
+///
+/// * The stop text is empty, matches nothing, or matches more than one stop.
+/// * SQLite fails while expanding the stop, resolving a route filter, or loading stop times.
 pub fn departure_board(
     db: &StaticDb,
     rt: RtView<'_>,
@@ -327,6 +447,24 @@ pub fn departure_board(
     ]))
 }
 
+/// Pages vehicle positions and joins them to static trip and stop names.
+///
+/// Vehicles sort by timestamp descending, then by entity id. The vehicle filter matches the id exactly or the label with ASCII case folding. The trip filter matches a resolved trip id, or applies that same label comparison to the vehicle label. The route filter matches the realtime route id or the static trip's route. The stop filter matches the reported stop id after parent and platform expansion.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]).
+/// * `query` - Optional filters and the page window ([`VehicleQuery`]).
+///
+/// # Returns
+///
+/// JSON with the feed header timestamp and one page under `vehicles`.
+///
+/// # Errors
+///
+/// * [`RtView::vehicles`] is absent.
+/// * SQLite fails while resolving a trip, route, or stop filter, or while loading stop names.
 pub fn vehicle_positions(
     db: &StaticDb,
     rt: RtView<'_>,
@@ -417,6 +555,24 @@ pub fn vehicle_positions(
     Ok(page_object(feed, "vehicles", rows, total, offset))
 }
 
+/// Pages trip updates and joins them to static names.
+///
+/// Rows sort by entity id. A stop filter keeps an update that names the stop, names its assigned stop, or carries a stop sequence the static trip uses at that stop. `stop_limit` caps the stop-time updates copied onto each row.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]).
+/// * `query` - Optional filters, page window, and per-trip stop cap ([`TripUpdateQuery`]).
+///
+/// # Returns
+///
+/// JSON with the feed header timestamp and one page under `trip_updates`.
+///
+/// # Errors
+///
+/// * [`RtView::trip_updates`] is absent.
+/// * SQLite fails while resolving a trip, route, or stop filter.
 pub fn trip_updates(
     db: &StaticDb,
     rt: RtView<'_>,
@@ -483,6 +639,24 @@ pub fn trip_updates(
     Ok(page_object(feed, "trip_updates", rows, total, offset))
 }
 
+/// Pages service alerts and joins them to static route names.
+///
+/// Rows sort by entity id. When `active_only` is set, an alert that lists at least one period is kept only when one period contains `at_unix`. Alerts that list no period stay. Text matching is a case-insensitive substring of the header or the description.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `rt` - Borrowed realtime feeds ([`RtView`]).
+/// * `query` - Optional filters, clock, page window, and text cap ([`AlertQuery`]).
+///
+/// # Returns
+///
+/// JSON with the feed header timestamp and one page under `alerts`.
+///
+/// # Errors
+///
+/// * [`RtView::alerts`] is absent.
+/// * SQLite fails while resolving a route or stop filter.
 pub fn alerts(db: &StaticDb, rt: RtView<'_>, query: &AlertQuery) -> Result<Value, AppError> {
     let Some(feed) = rt.alerts else {
         return Err(err("this feed has no alerts"));
@@ -553,6 +727,18 @@ pub fn alerts(db: &StaticDb, rt: RtView<'_>, query: &AlertQuery) -> Result<Value
     Ok(page_object(feed, "alerts", rows, total, offset))
 }
 
+/// Renders one feed message as JSON without the static database.
+///
+/// # Arguments
+///
+/// * `message` - Decoded [`crate::gtfs_rt::FeedMessage`].
+/// * `offset` - Entities to skip. Values past the end clamp to the entity count.
+/// * `limit` - Maximum entities to return.
+/// * `max_chars` - Maximum characters kept from each alert header and description.
+///
+/// # Returns
+///
+/// JSON for the feed header and one page of `entities`. `next_offset` is set when more entities remain.
 pub fn decode_message(
     message: &FeedMessage,
     offset: usize,
@@ -599,6 +785,29 @@ pub fn decode_message(
     ])
 }
 
+/// Renders one chosen trip, including the vehicle, the next stop, and upcoming stops.
+///
+/// Upcoming stops start at the vehicle's current stop sequence when that sequence is present. Otherwise they start at the first stop whose estimated departure, scheduled departure, or estimated arrival is at or after `query.at_unix` minus 60 seconds. `query.upcoming_limit` caps the list. The trip delay is the next stop's delay.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `query` - Clock, upcoming limit, and optional stop ([`TripStatusQuery`]).
+/// * `trip` - Static trip ([`TripRow`]).
+/// * `date` - Service date used to place scheduled times.
+/// * `stops` - Static stop times for the trip ([`StopTimeRow`]).
+/// * `vehicle` - Live [`crate::gtfs_rt::VehiclePosition`], when the vehicle feed has one.
+/// * `update` - [`crate::gtfs_rt::TripUpdate`] for this trip, when the feed has one.
+/// * `at_stop` - Resolved stop the caller asked about ([`StopRow`]).
+///
+/// # Returns
+///
+/// JSON for that trip. `at_stop` is omitted when the caller did not ask for a stop, and a note object when the trip does not serve the requested stop.
+///
+/// # Errors
+///
+/// * SQLite fails while expanding `at_stop` into parent and platform ids.
+/// * SQLite fails while loading the vehicle's current stop.
 #[allow(clippy::too_many_arguments)]
 fn render_trip(
     db: &StaticDb,
@@ -706,6 +915,22 @@ fn render_trip(
     ]))
 }
 
+/// Merges one static stop time with the trip update.
+///
+/// Scheduled times are Unix seconds on `date` in `tz`. An exact stop-time update supplies the estimate. When the stop has no exact update and the trip is not `CANCELED` or `DELETED`, the delay from [`crate::realtime::propagated_delay`] is applied. The platform is the assigned stop's platform, otherwise the static platform.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]), used to name an assigned stop.
+/// * `update` - Trip update for this trip, when one exists.
+/// * `trip_relationship_name` - Trip-level schedule relationship, already named.
+/// * `row` - Static stop time ([`StopTimeRow`]).
+/// * `date` - Service date.
+/// * `tz` - Agency timezone.
+///
+/// # Returns
+///
+/// JSON for that stop. Null fields are omitted.
 fn stop_json(
     db: &StaticDb,
     update: &Option<TripUpdate>,
@@ -818,6 +1043,17 @@ fn stop_json(
     ])
 }
 
+/// Renders one vehicle feed entity.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `entity` - [`crate::gtfs_rt::FeedEntity`] that should carry a vehicle position.
+/// * `stops` - Stops already loaded for this page, keyed by stop id.
+///
+/// # Returns
+///
+/// The vehicle JSON, plus `entity_id`. An entity with no vehicle returns only `id`.
 fn vehicle_row(db: &StaticDb, entity: &FeedEntity, stops: &HashMap<String, StopRow>) -> Value {
     let Some(vehicle) = entity.vehicle.as_ref() else {
         return obj([("id", json!(entity.id))]);
@@ -829,6 +1065,19 @@ fn vehicle_row(db: &StaticDb, entity: &FeedEntity, stops: &HashMap<String, StopR
     row
 }
 
+/// Renders one [`crate::gtfs_rt::VehiclePosition`] with static trip and stop names.
+///
+/// Coordinates pass through [`crate::realtime::round_coord`]. Bearing and speed are rounded to one decimal place.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `vehicle` - Realtime position.
+/// * `stops` - Prefetched stops keyed by stop id. A miss falls back to one stop lookup.
+///
+/// # Returns
+///
+/// JSON for the position. Null fields are omitted.
 fn vehicle_position_json(
     db: &StaticDb,
     vehicle: &VehiclePosition,
@@ -939,6 +1188,17 @@ fn vehicle_position_json(
     ])
 }
 
+/// Renders one trip-update entity and caps its stop list.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]), used for names and assigned platforms.
+/// * `entity` - [`crate::gtfs_rt::FeedEntity`] that should carry a trip update.
+/// * `stop_limit` - Maximum stop-time updates to include.
+///
+/// # Returns
+///
+/// JSON for the trip update. `stop_updates_omitted` is set when the cap drops rows. An entity with no trip update returns only `id`.
 fn trip_update_row(db: &StaticDb, entity: &FeedEntity, stop_limit: usize) -> Value {
     let Some(update) = entity.trip_update.as_ref() else {
         return obj([("id", json!(entity.id))]);
@@ -1046,6 +1306,19 @@ fn trip_update_row(db: &StaticDb, entity: &FeedEntity, stop_limit: usize) -> Val
     ])
 }
 
+/// Renders one alert entity.
+///
+/// The header and the description are clipped to `max_chars`. The URL is clipped to 500 characters.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]), used to name routes on informed entities.
+/// * `entity` - [`crate::gtfs_rt::FeedEntity`] that should carry an alert.
+/// * `max_chars` - Maximum characters kept from the header and the description.
+///
+/// # Returns
+///
+/// JSON for the alert. An entity with no alert returns only `id`.
 #[allow(deprecated)]
 fn alert_row(db: &StaticDb, entity: &FeedEntity, max_chars: usize) -> Value {
     let Some(alert) = entity.alert.as_ref() else {
@@ -1157,6 +1430,18 @@ fn alert_row(db: &StaticDb, entity: &FeedEntity, max_chars: usize) -> Value {
     ])
 }
 
+/// Renders one feed entity for [`decode_message`].
+///
+/// `kind` is `trip_update`, `vehicle`, `alert`, `shape`, `stop`, `trip_modifications`, or `unknown`. `is_deleted` is set when the entity is a deletion. Trip updates include at most 40 stops.
+///
+/// # Arguments
+///
+/// * `entity` - [`crate::gtfs_rt::FeedEntity`] to render.
+/// * `max_chars` - Maximum characters kept from alert text.
+///
+/// # Returns
+///
+/// JSON for that entity. Null fields are omitted.
 fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
     let kind = if entity.trip_update.is_some() {
         "trip_update"
@@ -1333,6 +1618,19 @@ fn decode_entity(entity: &FeedEntity, max_chars: usize) -> Value {
     value
 }
 
+/// Wraps a page of rows with the feed timestamp and paging fields.
+///
+/// # Arguments
+///
+/// * `feed` - Source [`crate::gtfs_rt::FeedMessage`], used for the header timestamp and feed version.
+/// * `key` - JSON field that holds `rows`.
+/// * `rows` - Page of already rendered entities.
+/// * `total` - Match count before paging.
+/// * `offset` - Number of matches skipped.
+///
+/// # Returns
+///
+/// JSON with `total`, `offset`, `returned`, and the page array stored under `key`. Header fields and `next_offset` are included when those values exist.
 fn page_object(
     feed: &FeedMessage,
     key: &'static str,
@@ -1362,6 +1660,23 @@ fn page_object(
     ])
 }
 
+/// Resolves a trip id or a trip short name.
+///
+/// An exact trip id returns that one trip. Any other text returns every trip with that short name, which may be an empty list.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `query` - Trip id or short name.
+///
+/// # Returns
+///
+/// Matching [`TripRow`] values.
+///
+/// # Errors
+///
+/// * `query` is empty or only whitespace.
+/// * SQLite fails while reading trips.
 fn resolve_trips(db: &StaticDb, query: &str) -> Result<Vec<TripRow>, AppError> {
     let query = query.trim();
     if query.is_empty() {
@@ -1373,6 +1688,20 @@ fn resolve_trips(db: &StaticDb, query: &str) -> Result<Vec<TripRow>, AppError> {
     db.trips_by_short_name(query)
 }
 
+/// Turns an optional trip query into the trip ids to keep.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `query` - Trip id or short name. `None` and whitespace mean no filter.
+///
+/// # Returns
+///
+/// `None` when the filter is unset. The ids of matching trips when the static feed knows the query. A one-element set of the raw text when nothing matches, so a realtime-only id can still hit.
+///
+/// # Errors
+///
+/// SQLite fails while resolving the trip.
 fn trip_filter(db: &StaticDb, query: Option<&str>) -> Result<Option<HashSet<String>>, AppError> {
     let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) else {
         return Ok(None);
@@ -1384,6 +1713,20 @@ fn trip_filter(db: &StaticDb, query: Option<&str>) -> Result<Option<HashSet<Stri
     Ok(Some(trips.into_iter().map(|t| t.trip_id).collect()))
 }
 
+/// Turns an optional route query into the route ids to keep.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `query` - Route id, short name, or long name. `None` and whitespace mean no filter.
+///
+/// # Returns
+///
+/// `None` when the filter is unset. Resolved route ids when the static feed knows the query. A one-element vector of the raw text when nothing matches.
+///
+/// # Errors
+///
+/// SQLite fails while resolving the route.
 fn route_filter(db: &StaticDb, query: Option<&str>) -> Result<Option<Vec<String>>, AppError> {
     let Some(query) = query.map(str::trim).filter(|q| !q.is_empty()) else {
         return Ok(None);
@@ -1396,6 +1739,19 @@ fn route_filter(db: &StaticDb, query: Option<&str>) -> Result<Option<Vec<String>
     }
 }
 
+/// Reports whether an alert's informed entities hit a route filter.
+///
+/// A selector matches on its route id, its trip's route id, or the static route of its trip id.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]), used when a selector only names a trip id.
+/// * `alert` - [`crate::gtfs_rt::Alert`] to test.
+/// * `routes` - Route ids that pass the filter.
+///
+/// # Returns
+///
+/// `true` when any informed entity names one of `routes`.
 fn alert_matches_route(db: &StaticDb, alert: &crate::gtfs_rt::Alert, routes: &[String]) -> bool {
     alert.informed_entity.iter().any(|selector| {
         if selector
@@ -1419,6 +1775,19 @@ fn alert_matches_route(db: &StaticDb, alert: &crate::gtfs_rt::Alert, routes: &[S
     })
 }
 
+/// Reports whether a trip update mentions a stop in the caller's set.
+///
+/// A stop-time update hits when its stop id or assigned stop id is in `stop_ids`, or when its stop sequence is one the static trip uses at that stop.
+///
+/// # Arguments
+///
+/// * `update` - [`crate::gtfs_rt::TripUpdate`] to test.
+/// * `stop_ids` - Expanded stop ids for the query.
+/// * `by_trip` - Static stop sequences keyed by trip id.
+///
+/// # Returns
+///
+/// `true` when any stop-time update hits.
 fn update_hits_stop(
     update: &TripUpdate,
     stop_ids: &HashSet<String>,
@@ -1446,6 +1815,17 @@ fn update_hits_stop(
     })
 }
 
+/// Indexes vehicle positions by trip id.
+///
+/// A later entity replaces an earlier one that repeats the same trip id. Positions without a trip id are skipped.
+///
+/// # Arguments
+///
+/// * `feed` - Vehicle [`crate::gtfs_rt::FeedMessage`]. `None` yields an empty map.
+///
+/// # Returns
+///
+/// Trip id to the [`crate::gtfs_rt::VehiclePosition`] that names it.
 fn index_vehicles(feed: Option<&FeedMessage>) -> HashMap<&str, &VehiclePosition> {
     let mut map = HashMap::new();
     if let Some(feed) = feed {
@@ -1460,6 +1840,17 @@ fn index_vehicles(feed: Option<&FeedMessage>) -> HashMap<&str, &VehiclePosition>
     map
 }
 
+/// Indexes trip updates by trip id.
+///
+/// A later entity replaces an earlier one that repeats the same trip id. Updates without a trip id are skipped.
+///
+/// # Arguments
+///
+/// * `feed` - Trip-update [`crate::gtfs_rt::FeedMessage`]. `None` yields an empty map.
+///
+/// # Returns
+///
+/// Trip id to the [`crate::gtfs_rt::TripUpdate`] that names it.
 fn index_updates(feed: Option<&FeedMessage>) -> HashMap<&str, &TripUpdate> {
     let mut map = HashMap::new();
     if let Some(feed) = feed {
@@ -1474,10 +1865,35 @@ fn index_updates(feed: Option<&FeedMessage>) -> HashMap<&str, &TripUpdate> {
     map
 }
 
+/// Names the trip-level schedule relationship on an update.
+///
+/// # Arguments
+///
+/// * `update` - [`crate::gtfs_rt::TripUpdate`], when the feed has one for this trip.
+///
+/// # Returns
+///
+/// The spec name, or `None` when there is no update or the discriminant is unknown.
 fn trip_rel_of(update: Option<&TripUpdate>) -> Option<String> {
     update.and_then(|update| trip_relationship(update.trip.schedule_relationship))
 }
 
+/// Ranks one trip on one service date against the query clock.
+///
+/// A live vehicle adds 1000 and a trip update adds 200. A canceled trip subtracts 50. A clock inside the trip's scheduled span, padded by ten minutes, adds 300. Each minute outside that span subtracts one point.
+///
+/// # Arguments
+///
+/// * `at` - Query clock, as Unix seconds.
+/// * `tz` - Agency timezone.
+/// * `date` - Service date being scored.
+/// * `stops` - Static stop times for the trip ([`StopTimeRow`]).
+/// * `vehicle` - Live [`crate::gtfs_rt::VehiclePosition`], when present.
+/// * `update` - [`crate::gtfs_rt::TripUpdate`], when present.
+///
+/// # Returns
+///
+/// A score. Higher is a closer match.
 fn score_candidate(
     at: i64,
     tz: Tz,
@@ -1522,6 +1938,17 @@ fn score_candidate(
     score
 }
 
+/// Collects the active service dates around the query clock.
+///
+/// # Arguments
+///
+/// * `db` - Static GTFS database ([`StaticDb`]).
+/// * `service_id` - Calendar id from the trip.
+/// * `at` - Query clock, as Unix seconds.
+///
+/// # Returns
+///
+/// Yesterday when that service runs, then today when that service runs. Empty when neither date is active.
 fn service_dates(db: &StaticDb, service_id: &str, at: i64) -> Vec<NaiveDate> {
     let today = local_date(at, db.tz);
     let mut dates = Vec::new();
@@ -1536,16 +1963,50 @@ fn service_dates(db: &StaticDb, service_id: &str, at: i64) -> Vec<NaiveDate> {
     dates
 }
 
+/// Calendar date of a Unix instant in an agency timezone.
+///
+/// # Arguments
+///
+/// * `at` - Unix seconds.
+/// * `tz` - Agency timezone.
+///
+/// # Returns
+///
+/// The local [`NaiveDate`].
 fn local_date(at: i64, tz: Tz) -> NaiveDate {
     at_datetime(at, tz).date_naive()
 }
 
+/// Converts Unix seconds to a zoned datetime.
+///
+/// An instant chrono cannot represent becomes the Unix epoch in `tz`.
+///
+/// # Arguments
+///
+/// * `at` - Unix seconds.
+/// * `tz` - Timezone to apply.
+///
+/// # Returns
+///
+/// The zoned [`DateTime`].
 fn at_datetime(at: i64, tz: Tz) -> DateTime<Tz> {
     DateTime::from_timestamp(at, 0)
         .unwrap_or_else(|| DateTime::from_timestamp(0, 0).unwrap())
         .with_timezone(&tz)
 }
 
+/// Unix seconds of local midnight on a service date.
+///
+/// During a fold, the earlier offset is used. When that local midnight cannot be placed, the result is `0`.
+///
+/// # Arguments
+///
+/// * `date` - Civil date in `tz`.
+/// * `tz` - Agency timezone.
+///
+/// # Returns
+///
+/// Unix seconds of midnight.
 fn midnight_unix(date: NaiveDate, tz: Tz) -> i64 {
     let naive = date.and_hms_opt(0, 0, 0).unwrap();
     tz.from_local_datetime(&naive)
@@ -1555,10 +2016,33 @@ fn midnight_unix(date: NaiveDate, tz: Tz) -> i64 {
         .unwrap_or(0)
 }
 
+/// Places a GTFS time-of-day on a service date.
+///
+/// `sec` is seconds since local midnight and may pass 24 hours, which is how GTFS encodes trips after midnight.
+///
+/// # Arguments
+///
+/// * `date` - Service date.
+/// * `sec` - Seconds since local midnight.
+/// * `tz` - Agency timezone.
+///
+/// # Returns
+///
+/// Unix seconds for that scheduled instant.
 fn gtfs_unix(date: NaiveDate, sec: i64, tz: Tz) -> i64 {
     midnight_unix(date, tz) + sec
 }
 
+/// Formats a Unix instant as `HH:MM` in an agency timezone.
+///
+/// # Arguments
+///
+/// * `unix` - Unix seconds.
+/// * `tz` - Agency timezone.
+///
+/// # Returns
+///
+/// A 24-hour `HH:MM` string. Seconds are dropped.
 fn hhmm(unix: i64, tz: Tz) -> String {
     let dt = at_datetime(unix, tz);
     format!("{:02}:{:02}", dt.hour(), dt.minute())
