@@ -1,0 +1,20 @@
+{
+  "name": "@sohampatwardhan/gtfs-mcp-darwin-arm64",
+  "version": "0.2.0",
+  "description": "macOS arm64 binary for gtfs-mcp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sohampatwardhan/gtfs-mcp.git",
+    "directory": "npm/darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "gtfs-mcp"
+  ]
+}

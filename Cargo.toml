@@ -1,14 +1,32 @@
 [package]
-name = "gtfs-rt-mcp"
-description = "MCP server for exploring GTFS static schedules and GTFS-Realtime feeds"
+name = "gtfs-mcp"
+description = "MCP server for GTFS static schedules and optional GTFS-Realtime feeds"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
+repository = "https://github.com/sohampatwardhan/gtfs-mcp"
 readme = "README.md"
+keywords = ["gtfs", "gtfs-realtime", "mcp", "transit", "protobuf"]
+categories = ["command-line-utilities", "parsing"]
+include = [
+    "/src/**",
+    "/proto/**",
+    "/tests/fixtures/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
+
+[lib]
+name = "gtfs_mcp"
+path = "src/lib.rs"
 
 [[bin]]
-name = "gtfs-rt-mcp"
+name = "gtfs-mcp"
 path = "src/main.rs"
 
 [dependencies]
@@ -50,6 +68,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }
 
 [build-dependencies]
 prost-build = "0.14"
+protoc-bin-vendored = "3.3.0"
 
 [profile.release]
 lto = "thin"

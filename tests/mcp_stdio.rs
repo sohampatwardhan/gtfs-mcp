@@ -6,15 +6,15 @@ use serde_json::json;
 #[tokio::test]
 async fn stdio_lists_tools_and_reads_harbor() {
     let dir = std::env::temp_dir().join(format!(
-        "gtfs-rt-mcp-stdio-{}-{}",
+        "gtfs-mcp-stdio-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gtfs-rt-mcp"));
+    let paths = gtfs_mcp::fixtures::materialize(&dir).unwrap();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_gtfs-mcp"));
     command
         .arg("--static")
         .arg(&paths.static_zip)
@@ -25,7 +25,7 @@ async fn stdio_lists_tools_and_reads_harbor() {
         .arg("--alerts")
         .arg(&paths.alerts)
         .arg("stdio")
-        .env("GTFS_RT_MCP_LOG", "error");
+        .env("GTFS_MCP_LOG", "error");
     let client =
         ().serve(TokioChildProcess::new(command).expect("spawn"))
             .await

@@ -8,17 +8,17 @@ use serde_json::json;
 #[tokio::test]
 async fn http_lists_tools_and_answers_departure_board() {
     let dir = std::env::temp_dir().join(format!(
-        "gtfs-rt-mcp-http-{}-{}",
+        "gtfs-mcp-http-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    let paths = gtfs_rt_mcp::fixtures::materialize(&dir).unwrap();
-    let catalog = Arc::new(gtfs_rt_mcp::Catalog::new().unwrap());
+    let paths = gtfs_mcp::fixtures::materialize(&dir).unwrap();
+    let catalog = Arc::new(gtfs_mcp::Catalog::new().unwrap());
     catalog
-        .register(gtfs_rt_mcp::RegisterRequest {
+        .register(gtfs_mcp::RegisterRequest {
             static_path: Some(paths.static_zip.display().to_string()),
             trip_updates_path: Some(paths.trip_updates.display().to_string()),
             vehicle_positions_path: Some(paths.vehicle_positions.display().to_string()),
@@ -27,10 +27,9 @@ async fn http_lists_tools_and_answers_departure_board() {
         })
         .await
         .unwrap();
-    let (addr, handle) =
-        gtfs_rt_mcp::spawn_http(catalog, "127.0.0.1:0".parse().unwrap(), Vec::new())
-            .await
-            .unwrap();
+    let (addr, handle) = gtfs_mcp::spawn_http(catalog, "127.0.0.1:0".parse().unwrap(), Vec::new())
+        .await
+        .unwrap();
 
     let health = reqwest::Client::new()
         .get(format!("http://{addr}/healthz"))

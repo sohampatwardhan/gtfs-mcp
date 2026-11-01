@@ -10,8 +10,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install protobuf and ripgrep
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler ripgrep
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Versions match Cargo.toml
+        run: bash scripts/check-versions.sh
       - name: Reject hardcoded GTFS endpoints
         run: bash .github/scripts/check-gtfs-urls.sh
       - name: Format
@@ -22,3 +24,10 @@ jobs:
         run: cargo test --locked
       - name: Release build
         run: cargo build --release --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check the npm launcher parses
+        run: node --check npm/gtfs-mcp/bin/gtfs-mcp.js
+      - name: cargo publish dry run
+        run: cargo publish --dry-run --locked

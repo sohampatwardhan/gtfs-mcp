@@ -114,7 +114,7 @@ pub fn loc_label(loc: &Loc) -> String {
 
 pub fn http_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
-        .user_agent(concat!("gtfs-rt-mcp/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("gtfs-mcp/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(45))
         .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(5))
