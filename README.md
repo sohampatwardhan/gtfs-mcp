@@ -1,5 +1,7 @@
 # gtfs-mcp
 
+[![npm](https://img.shields.io/npm/v/gtfs-mcp)](https://www.npmjs.com/package/gtfs-mcp)
+[![crates.io](https://img.shields.io/crates/v/gtfs-mcp)](https://crates.io/crates/gtfs-mcp)
 [![docs.rs](https://docs.rs/gtfs-mcp/badge.svg)](https://docs.rs/gtfs-mcp)
 
 MCP server that lets an agent read GTFS static schedules and GTFS-Realtime feeds. The API reference is on [docs.rs](https://docs.rs/gtfs-mcp). Register a feed, then ask where a vehicle is, how late it is, which track it was assigned, what the next departures are, and which alerts are active.
@@ -8,19 +10,228 @@ It works with any agency. Startup takes one static GTFS zip (URL or path) and op
 
 gtfs-mcp is operator-agnostic: `src/` and `tests/` do not name an agency, embed a real feed endpoint or feed id, or special-case an auth flow. Examples use placeholders on reserved domains such as `example.com`, and CI rejects other GTFS URLs there.
 
-## Installation
+## Install as an MCP server
 
-`GTFS_MCP_STATIC` is required before the server will stay up. The URLs below are placeholders on `example.com`.
+Quick start, from npmjs.org:
 
-### cargo install
+```bash
+npx -y gtfs-mcp --version
+```
 
-Rust 1.88 or newer. A system `protoc` is not required; the build uses a vendored `protoc`.
+The launcher accepts the same arguments as the binary. Serving MCP needs a transport subcommand: `stdio` or `http`. `npx -y gtfs-mcp` with no subcommand exits, because that subcommand is required.
+
+```bash
+GTFS_MCP_STATIC=https://example.com/gtfs.zip npx -y gtfs-mcp stdio
+```
+
+`GTFS_MCP_STATIC` is required. The other feed variables are optional. Every URL below is a placeholder on `example.com`. `GTFS_MCP_HTTP_HEADERS` is a JSON object of header name to string value. The value `replace-me` is not a real token.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `GTFS_MCP_STATIC` | yes | GTFS static zip URL or path. |
+| `GTFS_MCP_TRIP_UPDATES` | no | TripUpdates protobuf URL or path. |
+| `GTFS_MCP_VEHICLE_POSITIONS` | no | VehiclePositions protobuf URL or path. |
+| `GTFS_MCP_ALERTS` | no | Alerts protobuf URL or path. |
+| `GTFS_MCP_HTTP_HEADERS` | no | JSON object of HTTP headers. Values are never logged. |
+
+`stdio` speaks MCP on stdin and stdout. Logs go to stderr. Put `stdio` in the client's `args` (or after `--` in Claude Code). The server name is `gtfs-mcp`.
+
+### Claude Desktop
+
+`claude_desktop_config.json` (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "gtfs-mcp": {
+      "command": "npx",
+      "args": ["-y", "gtfs-mcp", "stdio"],
+      "env": {
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
+        "GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
+      }
+    }
+  }
+}
+```
+
+### Claude Code
+
+`-e` is the short form of `--env`. The server name comes before `-e`, and `stdio` comes after `--`:
+
+```bash
+claude mcp add gtfs-mcp \
+  -e GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+  -e GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+  -e GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+  -e GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+  -e 'GTFS_MCP_HTTP_HEADERS={"x-api-key":"replace-me"}' \
+  -- npx -y gtfs-mcp stdio
+```
+
+The same shape with only the required variable:
+
+```bash
+claude mcp add gtfs-mcp -e GTFS_MCP_STATIC=https://example.com/gtfs.zip -- npx -y gtfs-mcp stdio
+```
+
+### Cursor
+
+`.cursor/mcp.json` in the project, or `~/.cursor/mcp.json` for every project:
+
+```json
+{
+  "mcpServers": {
+    "gtfs-mcp": {
+      "command": "npx",
+      "args": ["-y", "gtfs-mcp", "stdio"],
+      "env": {
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
+        "GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
+      }
+    }
+  }
+}
+```
+
+### VS Code
+
+`.vscode/mcp.json` uses `servers`, and a stdio server sets `"type": "stdio"`:
+
+```json
+{
+  "servers": {
+    "gtfs-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "gtfs-mcp", "stdio"],
+      "env": {
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
+        "GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
+      }
+    }
+  }
+}
+```
+
+### Windsurf
+
+`~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "gtfs-mcp": {
+      "command": "npx",
+      "args": ["-y", "gtfs-mcp", "stdio"],
+      "env": {
+        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
+        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
+        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
+        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
+        "GTFS_MCP_HTTP_HEADERS": "{\"x-api-key\":\"replace-me\"}"
+      }
+    }
+  }
+}
+```
+
+### Codex CLI
+
+`~/.codex/config.toml` (or `.codex/config.toml` in the project):
+
+```toml
+[mcp_servers.gtfs-mcp]
+command = "npx"
+args = ["-y", "gtfs-mcp", "stdio"]
+
+[mcp_servers.gtfs-mcp.env]
+GTFS_MCP_STATIC = "https://example.com/gtfs.zip"
+GTFS_MCP_TRIP_UPDATES = "https://example.com/realtime/trip-updates.pb"
+GTFS_MCP_VEHICLE_POSITIONS = "https://example.com/realtime/vehicle-positions.pb"
+GTFS_MCP_ALERTS = "https://example.com/realtime/alerts.pb"
+GTFS_MCP_HTTP_HEADERS = '{"x-api-key":"replace-me"}'
+```
+
+### Streamable HTTP
+
+`http` listens on `127.0.0.1:8091` by default. MCP is `http://127.0.0.1:8091/mcp`. Liveness is `GET /healthz`. The feed variables belong on this process, not on the client URL. `Host` must be `localhost`, `127.0.0.1`, or `::1` unless you pass `--allowed-host` (`GTFS_MCP_ALLOWED_HOST`). `--bind` (`GTFS_MCP_BIND`) changes the listen address.
+
+```bash
+GTFS_MCP_STATIC=https://example.com/gtfs.zip \
+GTFS_MCP_TRIP_UPDATES=https://example.com/realtime/trip-updates.pb \
+GTFS_MCP_VEHICLE_POSITIONS=https://example.com/realtime/vehicle-positions.pb \
+GTFS_MCP_ALERTS=https://example.com/realtime/alerts.pb \
+GTFS_MCP_HTTP_HEADERS='{"x-api-key":"replace-me"}' \
+npx -y gtfs-mcp http
+```
+
+Claude Desktop and Cursor:
+
+```json
+{
+  "mcpServers": {
+    "gtfs-mcp": {
+      "url": "http://127.0.0.1:8091/mcp"
+    }
+  }
+}
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http gtfs-mcp http://127.0.0.1:8091/mcp
+```
+
+VS Code `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "gtfs-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8091/mcp"
+    }
+  }
+}
+```
+
+Windsurf uses `serverUrl`:
+
+```json
+{
+  "mcpServers": {
+    "gtfs-mcp": {
+      "serverUrl": "http://127.0.0.1:8091/mcp"
+    }
+  }
+}
+```
+
+Codex CLI:
+
+```toml
+[mcp_servers.gtfs-mcp]
+url = "http://127.0.0.1:8091/mcp"
+```
+
+### Other ways to install
+
+`cargo install` needs Rust 1.88 or newer. A system `protoc` is not required.
 
 ```bash
 cargo install gtfs-mcp --locked
 ```
-
-### Prebuilt binaries
 
 GitHub Releases for tag `vX.Y.Z` ship linux x86_64 and aarch64 (musl), macOS x86_64 and aarch64, and Windows x86_64, plus `sha256sums.txt`.
 
@@ -33,21 +244,13 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 irm https://github.com/sohampatwardhan/gtfs-mcp/releases/latest/download/gtfs-mcp-installer.ps1 | iex
 ```
 
-The installers are `scripts/install.sh` and `scripts/install.ps1`. `GTFS_MCP_VERSION=0.2.0` selects a release. `PREFIX` sets the install directory (the default is `~/.local` on Unix and `%LOCALAPPDATA%\gtfs-mcp` on Windows).
+The installers are `scripts/install.sh` and `scripts/install.ps1`. `GTFS_MCP_VERSION=0.3.0` selects a release. `PREFIX` sets the install directory (the default is `~/.local` on Unix and `%LOCALAPPDATA%\gtfs-mcp` on Windows). A Homebrew tap is not part of this release.
 
-A Homebrew tap is not part of this release. It would need a separate tap repository and a token.
+`GTFS_MCP_BINARY` is a path to a local `gtfs-mcp` binary. The npm launcher skips its download when that variable is set. `HTTPS_PROXY` (or `https_proxy`, then `HTTP_PROXY`) is honored. `NO_PROXY` skips the proxy for matching hosts.
 
-### npx
+The npm package has no install scripts, so `npx --ignore-scripts` still works. On first run it downloads the archive for its own version from GitHub Releases, checks `sha256sums.txt`, and caches the binary. Later runs use the cache.
 
-```bash
-npx -y gtfs-mcp --version
-```
-
-The `gtfs-mcp` package is a small launcher with no install scripts, so `npx --ignore-scripts` still works. On first run it downloads the archive for its own version from GitHub Releases (linux x64 and arm64 musl, macOS x64 and arm64, Windows x64), checks `sha256sums.txt`, and caches the binary under the user cache directory for that version. Later runs use the cache. Arguments, environment variables, and stdio are passed through, and the process exits with the binary's status.
-
-`GTFS_MCP_BINARY` is a path to a local `gtfs-mcp` binary and skips the download. `HTTPS_PROXY` (or `https_proxy`, then `HTTP_PROXY`) is honored. `NO_PROXY` skips the proxy for matching hosts.
-
-The same launcher is also published as `@sohampatwardhan/gtfs-mcp` on GitHub Packages so it appears in this repository's Packages list. `npx -y gtfs-mcp` on npmjs.org stays the usual install. To use the scoped package, point the scope at GitHub Packages in `.npmrc`. That registry needs a GitHub token with `read:packages`:
+The same launcher is also published as `@sohampatwardhan/gtfs-mcp` on GitHub Packages. `npx -y gtfs-mcp` on npmjs.org stays the usual install. To use the scoped package, point the scope at GitHub Packages in `.npmrc`. That registry needs a GitHub token with `read:packages`:
 
 ```text
 @sohampatwardhan:registry=https://npm.pkg.github.com
@@ -56,40 +259,6 @@ The same launcher is also published as `@sohampatwardhan/gtfs-mcp` on GitHub Pac
 
 ```bash
 npx -y @sohampatwardhan/gtfs-mcp --version
-```
-
-### MCP clients
-
-npx in Cursor, Claude Desktop, or Claude Code:
-
-```json
-{
-  "mcpServers": {
-    "gtfs": {
-      "command": "npx",
-      "args": ["-y", "gtfs-mcp", "stdio"],
-      "env": {
-        "GTFS_MCP_FEED_ID": "harbor",
-        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
-      }
-    }
-  }
-}
-```
-
-Streamable HTTP, after `gtfs-mcp http` is already running with `GTFS_MCP_STATIC` set:
-
-```json
-{
-  "mcpServers": {
-    "gtfs": {
-      "url": "http://127.0.0.1:8091/mcp"
-    }
-  }
-}
 ```
 
 ## Why Rust
@@ -142,7 +311,7 @@ cargo build --release --locked
 
 ## Breaking changes in 0.2.0
 
-0.2.0 is not published yet. The project is renamed from `gtfs-rt-mcp` to `gtfs-mcp`, and environment variables use the `GTFS_MCP_` prefix. The old `GTFS_RT_MCP_*` names are not accepted.
+0.2.0 renamed the project from `gtfs-rt-mcp` to `gtfs-mcp`. Environment variables use the `GTFS_MCP_` prefix. The old `GTFS_RT_MCP_*` names are not accepted. 0.3.0 is the current release.
 
 Startup configuration is one feed, and `GTFS_MCP_STATIC` (or `--static`) is required. These 0.1.0 options are gone:
 
@@ -251,82 +420,7 @@ Keep keys in the MCP client's env or secret store, or in the environment of the 
 
 ## MCP clients
 
-Put the binary on `PATH`, or use an absolute `command`. `args` must include `stdio`. The feed in `env` is registered before the first tool call, so the model does not need `register_feed` for that feed. `replace-me` below is a placeholder: substitute the publisher's token and do not commit a real one. The server never echoes that value. Feed URLs below are placeholders.
-
-Cursor `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "gtfs-rt": {
-      "command": "gtfs-mcp",
-      "args": ["stdio"],
-      "env": {
-        "GTFS_MCP_FEED_ID": "harbor",
-        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
-      }
-    }
-  }
-}
-```
-
-Claude Desktop `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "gtfs-rt": {
-      "command": "gtfs-mcp",
-      "args": ["stdio"],
-      "env": {
-        "GTFS_MCP_FEED_ID": "harbor",
-        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb",
-        "GTFS_MCP_HTTP_HEADERS": "{\"Authorization\":\"Bearer replace-me\"}"
-      }
-    }
-  }
-}
-```
-
-Claude Code `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "gtfs-rt": {
-      "command": "gtfs-mcp",
-      "args": ["stdio"],
-      "env": {
-        "GTFS_MCP_FEED_ID": "harbor",
-        "GTFS_MCP_STATIC": "https://example.com/gtfs.zip",
-        "GTFS_MCP_TRIP_UPDATES": "https://example.com/realtime/trip-updates.pb",
-        "GTFS_MCP_VEHICLE_POSITIONS": "https://example.com/realtime/vehicle-positions.pb",
-        "GTFS_MCP_ALERTS": "https://example.com/realtime/alerts.pb"
-      }
-    }
-  }
-}
-```
-
-The same `mcpServers` object works in any of the three files. Further feeds are added at runtime with `register_feed`, not with extra environment variables.
-
-Cursor streamable HTTP (start `gtfs-mcp http` first, with `GTFS_MCP_STATIC` set in that process):
-
-```json
-{
-  "mcpServers": {
-    "gtfs-rt": {
-      "url": "http://127.0.0.1:8091/mcp"
-    }
-  }
-}
-```
+Copy-paste configs are under [Install as an MCP server](#install-as-an-mcp-server). When the client starts the process, `args` must include `stdio`. The feed in `env` is registered before the first tool call, so the model does not need `register_feed` for that feed. Further feeds are added at runtime with `register_feed`.
 
 The server name is `gtfs-mcp`. Instructions on `initialize` tell the model to call `list_feeds` first. Responses are compact JSON. Page with `offset` until `next_offset` is null.
 
@@ -430,7 +524,7 @@ The test skips when `GTFS_MCP_STATIC` is unset. CI does not set it. `cargo test`
 cargo test --locked
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `src/` and `tests/`, checks that npm package versions match `Cargo.toml`, runs `cargo fmt`, clippy, and `cargo test --locked`, and runs `cargo publish --dry-run --locked`. A system `protoc` is not installed. Tag `vX.Y.Z` runs `.github/workflows/release.yml`, which publishes the crate, binaries, and npm packages. Version numbers change only through `scripts/bump-version.sh`.
+GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `src/` and `tests/`, checks that the npm package version matches `Cargo.toml`, runs `cargo fmt`, clippy, and `cargo test --locked`, and runs `cargo publish --dry-run --locked`. A system `protoc` is not installed. Tag `vX.Y.Z` runs `.github/workflows/release.yml`, which publishes the crate, release binaries, and the npm package. Version numbers change only through `scripts/bump-version.sh`.
 
 ## Layout
 
@@ -445,5 +539,5 @@ GitHub Actions (`.github/workflows/ci.yml`) rejects non-reserved GTFS URLs in `s
 - `proto/gtfs-realtime.proto` — vendored spec, Apache-2.0
 - `.github/scripts/check-gtfs-urls.sh` — fails CI on a hardcoded GTFS endpoint
 - `.github/workflows/release.yml` — tag-triggered publish
-- `scripts/bump-version.sh` — bumps `Cargo.toml` and the npm packages, then commits and tags
+- `scripts/bump-version.sh` — bumps `Cargo.toml` and the npm package, then commits and tags
 - `npm/gtfs-mcp/` — `npx` launcher that downloads a release binary

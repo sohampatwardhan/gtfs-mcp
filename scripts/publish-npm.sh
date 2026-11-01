@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish the unscoped gtfs-mcp package to npmjs.org when this version is
-# not already there. Safe to rerun. Does not publish platform packages.
+# not already there. Safe to rerun. Publishes only the unscoped package.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)

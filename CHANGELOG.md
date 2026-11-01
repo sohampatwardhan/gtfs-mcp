@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- The Docker image is no longer published. The existing `ghcr.io/sohampatwardhan/gtfs-mcp:v0.2.0` image is left as-is.
-- Platform npm packages (`@sohampatwardhan/gtfs-mcp-*`) are removed. The npmjs.org package `gtfs-mcp` is a launcher that, on first run, downloads the matching archive for its version from GitHub Releases, verifies `sha256sums.txt`, and caches the binary. `GTFS_MCP_BINARY` selects a local binary instead.
+- No container image is published.
+- npmjs.org publishes one package, unscoped `gtfs-mcp`. On first run it downloads the matching GitHub Release archive, verifies `sha256sums.txt`, and caches the binary. `GTFS_MCP_BINARY` selects a local binary instead.
 - The same launcher is also published to GitHub Packages as `@sohampatwardhan/gtfs-mcp`, from a temporary copy. The npmjs.org package name stays `gtfs-mcp`.
 
 ## 0.2.0
